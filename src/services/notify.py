@@ -137,8 +137,8 @@ class NotificationService:
 **Description**:
 > {description if description else "无描述"}
 
-**Audio**: [下载]({audio_url})
-**Transcript**: {f"[下载]({transcript_url})" if task.transcript_file_id else "无字幕"}
+**Audio**: {audio_url}
+**Transcript**: {transcript_url if task.transcript_file_id else "无字幕"}
 
 **Task ID**: `{task.id}`
 """
