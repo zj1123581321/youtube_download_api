@@ -34,6 +34,8 @@ cp .env.example .env.development
 
 # 3. 启动开发环境 (Windows)
 .\scripts\dev.ps1
+或者
+$env:ENV_FILE=".env.development"; uvicorn src.main:app --reload --host 127.0.0.1 --port 8000
 
 # 或 Linux/Mac
 chmod +x scripts/dev.sh
