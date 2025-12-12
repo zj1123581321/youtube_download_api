@@ -278,6 +278,8 @@ X-API-Key: your-api-key
 }
 ```
 
+**注意**：`transcript` 字段可能为 `null`（视频没有字幕时），这不影响任务成功状态。
+
 **响应 - 失败**
 ```json
 {
@@ -369,6 +371,8 @@ X-Timestamp: 1702357425
 }
 ```
 
+**注意**：`transcript` 字段可能为 `null`（视频没有字幕时）。
+
 **签名验证**（客户端实现）
 ```python
 import hmac
@@ -451,8 +455,7 @@ CREATE TABLE tasks (
     completed_at TIMESTAMP,
     expires_at TIMESTAMP,
 
-    -- 索引
-    UNIQUE(video_id, status)                -- 用于去重查询
+    -- 索引（不使用唯一约束，因为同一视频可能有多条失败记录）
 );
 
 CREATE INDEX idx_tasks_status ON tasks(status);
@@ -772,10 +775,11 @@ class YouTubeDownloader:
             # 提取信息并下载
             info = ydl.extract_info(video_url, download=True)
 
+            # transcript_path 可能为 None（视频没有字幕）
             return DownloadResult(
                 video_info=self._extract_video_info(info),
                 audio_path=self._find_audio_file(output_dir, info["id"]),
-                transcript_path=self._find_transcript_file(output_dir, info["id"]),
+                transcript_path=self._find_transcript_file(output_dir, info["id"]),  # 可能为 None
             )
 
     def _extract_video_info(self, info: dict) -> VideoInfo:
@@ -988,6 +992,9 @@ scheduler = AsyncIOScheduler(timezone="Asia/Shanghai")
 
 @app.on_event("startup")
 async def startup():
+    # 恢复中断的任务：将 downloading 状态重置为 pending
+    await db.execute("UPDATE tasks SET status='pending' WHERE status='downloading'")
+
     # 文件清理：每天凌晨 3 点执行
     scheduler.add_job(
         file_service.cleanup_expired_files,
@@ -1262,7 +1269,7 @@ def mock_notifier():
 
 ### 可靠性
 
-1. **任务持久化**：重启后自动恢复未完成任务
+1. **任务持久化**：重启后自动恢复未完成任务（downloading 状态重置为 pending）
 2. **错误重试**：可重试错误自动重试（指数退避）
 3. **回调重试**：Webhook 失败自动重试
 4. **健康检查**：定期检查各组件状态
