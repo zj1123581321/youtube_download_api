@@ -1,7 +1,8 @@
 """
 YouTube downloader module using yt-dlp.
 
-Handles audio and transcript downloads with error handling and retry logic.
+Handles audio downloads with error handling and retry logic.
+Subtitles are fetched separately via TikHub API to avoid YouTube rate limiting.
 """
 
 import asyncio
@@ -13,6 +14,7 @@ import yt_dlp
 
 from src.config import Settings
 from src.db.models import ErrorCode, VideoInfo
+from src.services.tikhub_service import TikHubService
 from src.utils.logger import logger
 
 
@@ -23,6 +25,16 @@ class DownloadResult:
     video_info: VideoInfo
     audio_path: Path
     transcript_path: Optional[Path] = None
+
+
+@dataclass
+class _AudioDownloadResult:
+    """Internal result of audio download (before subtitle fetch)."""
+
+    video_info: VideoInfo
+    audio_path: Path
+    video_id: str
+    raw_info: dict[str, Any]  # Raw yt-dlp info for subtitle URL extraction
 
 
 class DownloadError(Exception):
@@ -51,6 +63,7 @@ class YouTubeDownloader:
         """
         self.settings = settings
         self._base_opts = self._build_base_opts()
+        self._tikhub_service = TikHubService(settings)
 
     def _build_base_opts(self) -> dict[str, Any]:
         """
@@ -64,12 +77,10 @@ class YouTubeDownloader:
             "format": f"bestaudio[ext=m4a][abr<={self.settings.audio_quality}]/bestaudio[ext=m4a]/bestaudio",
             "extract_flat": False,
             # Subtitle configuration
-            # 字幕语言优先级：中文 > 英文 > 其他
-            # 实际下载时会根据可用字幕动态选择一种（见 _do_download）
-            "writesubtitles": True,
-            "writeautomaticsub": True,
-            "subtitleslangs": ["all"],  # 先获取所有可用字幕信息
-            "subtitlesformat": "json3",
+            # 禁用 yt-dlp 字幕下载，字幕通过 TikHub API 获取（避免 429 错误）
+            # 但仍然需要获取字幕信息（URL）用于 TikHub API
+            "writesubtitles": False,
+            "writeautomaticsub": False,
             # Network configuration
             "socket_timeout": 30,
             "retries": 3,
@@ -120,7 +131,10 @@ class YouTubeDownloader:
         progress_callback: Optional[Callable[[int], None]] = None,
     ) -> DownloadResult:
         """
-        Download video audio and transcript.
+        Download video audio and fetch transcript via TikHub API.
+
+        Audio is downloaded using yt-dlp, while subtitles are fetched separately
+        via TikHub API to avoid YouTube's 429 rate limiting.
 
         Args:
             video_url: YouTube video URL.
@@ -131,7 +145,8 @@ class YouTubeDownloader:
             DownloadResult with paths to downloaded files.
 
         Raises:
-            DownloadError: If download fails.
+            DownloadError: If audio download fails.
+            Note: Subtitle fetch failures do NOT raise errors, only log warnings.
         """
         if self.settings.dry_run:
             logger.info(f"Dry run: would download {video_url}")
@@ -144,12 +159,28 @@ class YouTubeDownloader:
         opts = self._build_download_opts(output_dir, progress_callback)
 
         try:
-            # Run download in thread pool to avoid blocking
+            # Step 1: Download audio in thread pool
             loop = asyncio.get_event_loop()
-            result = await loop.run_in_executor(
+            audio_result = await loop.run_in_executor(
                 None, self._do_download, video_url, opts, output_dir
             )
-            return result
+
+            # Step 2: Fetch subtitle via TikHub API (non-blocking, failure doesn't affect audio)
+            transcript_path = await self._fetch_subtitle_via_tikhub(
+                audio_result.raw_info,
+                output_dir,
+                audio_result.video_id,
+            )
+
+            logger.info(f"Download completed: {audio_result.video_id}")
+            logger.info(f"Audio: {audio_result.audio_path}")
+            logger.info(f"Transcript: {transcript_path}")
+
+            return DownloadResult(
+                video_info=audio_result.video_info,
+                audio_path=audio_result.audio_path,
+                transcript_path=transcript_path,
+            )
 
         except yt_dlp.utils.DownloadError as e:
             error_code, message = self._map_ytdlp_error(e)
@@ -159,6 +190,49 @@ class YouTubeDownloader:
         except Exception as e:
             logger.error(f"Unexpected download error: {e}")
             raise DownloadError(ErrorCode.DOWNLOAD_FAILED, str(e)) from e
+
+    async def _fetch_subtitle_via_tikhub(
+        self,
+        raw_info: dict[str, Any],
+        output_dir: Path,
+        video_id: str,
+    ) -> Optional[Path]:
+        """
+        Fetch subtitle via TikHub API.
+
+        This method is designed to be non-blocking and failure-safe.
+        Subtitle fetch failures only log warnings, they do NOT affect audio download.
+
+        Args:
+            raw_info: Raw yt-dlp video info containing subtitle URLs.
+            output_dir: Directory to save subtitle file.
+            video_id: YouTube video ID for filename.
+
+        Returns:
+            Path to saved subtitle file, or None if fetch failed or skipped.
+        """
+        try:
+            if not self._tikhub_service.is_available:
+                logger.info("TikHub API not configured, skipping subtitle fetch")
+                return None
+
+            transcript_path = await self._tikhub_service.fetch_best_subtitle(
+                info=raw_info,
+                output_dir=output_dir,
+                video_id=video_id,
+            )
+
+            if transcript_path:
+                logger.info(f"Subtitle fetched via TikHub: {transcript_path}")
+            else:
+                logger.warning(f"No subtitle available for video {video_id}")
+
+            return transcript_path
+
+        except Exception as e:
+            # Catch all exceptions to ensure subtitle failure doesn't affect audio
+            logger.warning(f"Failed to fetch subtitle via TikHub: {e}")
+            return None
 
     def _build_download_opts(
         self,
@@ -202,62 +276,17 @@ class YouTubeDownloader:
 
         return opts
 
-    # 字幕语言优先级：中文 > 英文 > 其他
-    SUBTITLE_PRIORITY = [
-        "zh-Hans",  # 简体中文
-        "zh-Hant",  # 繁体中文
-        "zh",       # 中文（通用）
-        "en",       # 英文
-    ]
-
-    def _select_best_subtitle_lang(self, info: dict[str, Any]) -> Optional[str]:
-        """
-        根据优先级选择最佳字幕语言。
-
-        Args:
-            info: yt-dlp 提取的视频信息。
-
-        Returns:
-            选中的字幕语言代码，如果没有可用字幕则返回 None。
-        """
-        # 获取可用字幕（包括自动生成的）
-        available_subs = set()
-
-        # 手动字幕
-        if info.get("subtitles"):
-            available_subs.update(info["subtitles"].keys())
-
-        # 自动生成字幕
-        if info.get("automatic_captions"):
-            available_subs.update(info["automatic_captions"].keys())
-
-        if not available_subs:
-            logger.debug("No subtitles available for this video")
-            return None
-
-        logger.debug(f"Available subtitle languages: {available_subs}")
-
-        # 按优先级选择
-        for lang in self.SUBTITLE_PRIORITY:
-            if lang in available_subs:
-                logger.info(f"Selected subtitle language: {lang}")
-                return lang
-
-        # 如果优先级列表中没有匹配的，选择第一个可用的
-        first_available = next(iter(available_subs))
-        logger.info(f"No preferred language found, using: {first_available}")
-        return first_available
-
     def _do_download(
         self, video_url: str, opts: dict[str, Any], output_dir: Path
-    ) -> DownloadResult:
+    ) -> _AudioDownloadResult:
         """
-        执行下载（在线程池中运行）。
+        执行音频下载（在线程池中运行）。
 
         优化策略：只发起 1 次 YouTube 页面请求，模拟正常用户行为。
-        1. extract_info(download=False) 获取视频信息和可用字幕列表
-        2. 根据优先级选择最佳字幕语言
-        3. process_video_result() 复用已获取的信息下载音频和字幕
+        1. extract_info(download=False) 获取视频信息和可用字幕 URL
+        2. process_video_result() 复用已获取的信息下载音频
+
+        注意：字幕通过 TikHub API 单独获取，不在此方法中处理。
 
         Args:
             video_url: YouTube video URL.
@@ -265,7 +294,7 @@ class YouTubeDownloader:
             output_dir: Output directory.
 
         Returns:
-            DownloadResult with video info and file paths.
+            _AudioDownloadResult with video info, audio path, and raw info for subtitle fetch.
         """
         with yt_dlp.YoutubeDL(opts) as ydl:
             # 第一步：提取视频信息（唯一的页面请求）
@@ -281,54 +310,26 @@ class YouTubeDownloader:
             video_info = self._extract_video_info(info)
             logger.debug(f"Extracted video info: {video_info}")
 
-            # 第二步：选择最佳字幕语言
-            best_lang = self._select_best_subtitle_lang(info)
+            # 第二步：下载音频（复用 info，不再请求页面）
+            logger.debug("Downloading audio (reusing info)...")
+            ydl.process_video_result(info, download=True)
 
-            # 第三步：配置下载参数
-            if best_lang:
-                ydl.params["subtitleslangs"] = [best_lang]
-                ydl.params["writesubtitles"] = True
-                ydl.params["writeautomaticsub"] = True
-                logger.info(f"Will download subtitle: {best_lang}")
-            else:
-                ydl.params["writesubtitles"] = False
-                ydl.params["writeautomaticsub"] = False
-                logger.info("No subtitles available to download")
-
-            # 第四步：下载音频和字幕（复用 info，不再请求页面）
-            logger.debug("Downloading audio and subtitle (reusing info)...")
-            try:
-                ydl.process_video_result(info, download=True)
-            except yt_dlp.utils.DownloadError as e:
-                # 如果是字幕下载失败，尝试只下载音频
-                error_msg = str(e).lower()
-                if "subtitle" in error_msg and best_lang:
-                    logger.warning(f"Subtitle download failed, retrying audio only: {e}")
-                    ydl.params["writesubtitles"] = False
-                    ydl.params["writeautomaticsub"] = False
-                    ydl.process_video_result(info, download=True)
-                else:
-                    raise
-
-        # 查找下载的文件
+        # 查找下载的音频文件
         audio_path = self._find_audio_file(output_dir, video_id)
-        transcript_path = self._find_transcript_file(output_dir, video_id)
 
         if not audio_path:
             raise DownloadError(
                 ErrorCode.DOWNLOAD_FAILED, "Audio file not found after download"
             )
 
-        logger.info(f"Download completed: {video_id}")
+        logger.info(f"Audio download completed: {video_id}")
         logger.info(f"Audio: {audio_path}")
-        logger.info(f"Transcript: {transcript_path}")
-        if not transcript_path:
-            logger.warning(f"No transcript found for video {video_id}")
 
-        return DownloadResult(
+        return _AudioDownloadResult(
             video_info=video_info,
             audio_path=audio_path,
-            transcript_path=transcript_path,
+            video_id=video_id,
+            raw_info=info,
         )
 
     def _extract_video_info(self, info: dict[str, Any]) -> VideoInfo:
@@ -379,29 +380,6 @@ class YouTubeDownloader:
                 ".ogg",
             ]:
                 return file
-
-        return None
-
-    def _find_transcript_file(self, output_dir: Path, video_id: str) -> Optional[Path]:
-        """
-        Find downloaded transcript file.
-
-        Args:
-            output_dir: Output directory.
-            video_id: YouTube video ID.
-
-        Returns:
-            Path to transcript file or None if not found.
-        """
-        # Look for JSON subtitle files with priority
-        for lang in ["zh-Hans", "zh-Hant", "zh", "en"]:
-            path = output_dir / f"{video_id}.{lang}.json3"
-            if path.exists():
-                return path
-
-        # Fallback: any json3 file
-        for file in output_dir.glob(f"{video_id}.*.json3"):
-            return file
 
         return None
 
@@ -470,7 +448,7 @@ class YouTubeDownloader:
                 duration=60,
             ),
             audio_path=output_dir / "test.m4a",
-            transcript_path=output_dir / "test.en.json3",
+            transcript_path=output_dir / "test.en.srt",
         )
 
 
