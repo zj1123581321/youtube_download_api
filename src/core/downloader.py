@@ -252,11 +252,12 @@ class YouTubeDownloader:
         self, video_url: str, opts: dict[str, Any], output_dir: Path
     ) -> DownloadResult:
         """
-        Perform the actual download (runs in thread pool).
+        执行下载（在线程池中运行）。
 
-        采用两步下载策略：
-        1. 先提取视频信息，确定最佳字幕语言
-        2. 只下载音频和一种字幕，减少请求次数
+        优化策略：只发起 1 次 YouTube 页面请求，模拟正常用户行为。
+        1. extract_info(download=False) 获取视频信息和可用字幕列表
+        2. 根据优先级选择最佳字幕语言
+        3. process_video_result() 复用已获取的信息下载音频和字幕
 
         Args:
             video_url: YouTube video URL.
@@ -266,9 +267,9 @@ class YouTubeDownloader:
         Returns:
             DownloadResult with video info and file paths.
         """
-        # 第一步：提取视频信息（不下载）
-        extract_opts = {**opts, "skip_download": True, "writesubtitles": False}
-        with yt_dlp.YoutubeDL(extract_opts) as ydl:
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            # 第一步：提取视频信息（唯一的页面请求）
+            logger.debug("Extracting video info (single page request)...")
             info = ydl.extract_info(video_url, download=False)
 
             if not info:
@@ -276,37 +277,42 @@ class YouTubeDownloader:
                     ErrorCode.DOWNLOAD_FAILED, "Failed to extract video info"
                 )
 
-        video_id = info["id"]
-        video_info = self._extract_video_info(info)
-        logger.debug(f"Extracted video info: {video_info}")
+            video_id = info["id"]
+            video_info = self._extract_video_info(info)
+            logger.debug(f"Extracted video info: {video_info}")
 
-        # 第二步：选择最佳字幕语言
-        best_lang = self._select_best_subtitle_lang(info)
+            # 第二步：选择最佳字幕语言
+            best_lang = self._select_best_subtitle_lang(info)
 
-        # 第三步：下载音频（不下载字幕，确保音频下载成功）
-        audio_opts = {**opts}
-        audio_opts["writesubtitles"] = False
-        audio_opts["writeautomaticsub"] = False
+            # 第三步：配置下载参数
+            if best_lang:
+                ydl.params["subtitleslangs"] = [best_lang]
+                ydl.params["writesubtitles"] = True
+                ydl.params["writeautomaticsub"] = True
+                logger.info(f"Will download subtitle: {best_lang}")
+            else:
+                ydl.params["writesubtitles"] = False
+                ydl.params["writeautomaticsub"] = False
+                logger.info("No subtitles available to download")
 
-        with yt_dlp.YoutubeDL(audio_opts) as ydl:
-            ydl.extract_info(video_url, download=True)
-
-        # 查找音频文件
-        audio_path = self._find_audio_file(output_dir, video_id)
-
-        # 第四步：单独下载字幕（失败不影响任务）
-        transcript_path = None
-        if best_lang:
-            logger.info(f"Downloading subtitle: {best_lang}")
+            # 第四步：下载音频和字幕（复用 info，不再请求页面）
+            logger.debug("Downloading audio and subtitle (reusing info)...")
             try:
-                transcript_path = self._download_subtitle(
-                    video_url, output_dir, video_id, best_lang, opts
-                )
-            except Exception as e:
-                logger.warning(f"Failed to download subtitle ({best_lang}): {e}")
-                # 字幕下载失败不影响整体任务
-        else:
-            logger.info("No subtitles available")
+                ydl.process_video_result(info, download=True)
+            except yt_dlp.utils.DownloadError as e:
+                # 如果是字幕下载失败，尝试只下载音频
+                error_msg = str(e).lower()
+                if "subtitle" in error_msg and best_lang:
+                    logger.warning(f"Subtitle download failed, retrying audio only: {e}")
+                    ydl.params["writesubtitles"] = False
+                    ydl.params["writeautomaticsub"] = False
+                    ydl.process_video_result(info, download=True)
+                else:
+                    raise
+
+        # 查找下载的文件
+        audio_path = self._find_audio_file(output_dir, video_id)
+        transcript_path = self._find_transcript_file(output_dir, video_id)
 
         if not audio_path:
             raise DownloadError(
@@ -324,48 +330,6 @@ class YouTubeDownloader:
             audio_path=audio_path,
             transcript_path=transcript_path,
         )
-
-    def _download_subtitle(
-        self,
-        video_url: str,
-        output_dir: Path,
-        video_id: str,
-        lang: str,
-        base_opts: dict[str, Any],
-    ) -> Optional[Path]:
-        """
-        单独下载指定语言的字幕。
-
-        Args:
-            video_url: YouTube 视频 URL。
-            output_dir: 输出目录。
-            video_id: 视频 ID。
-            lang: 字幕语言代码。
-            base_opts: 基础 yt-dlp 选项。
-
-        Returns:
-            字幕文件路径，下载失败则返回 None。
-        """
-        sub_opts = {
-            **base_opts,
-            "skip_download": True,  # 不下载视频/音频
-            "writesubtitles": True,
-            "writeautomaticsub": True,
-            "subtitleslangs": [lang],
-            "subtitlesformat": "json3",
-        }
-
-        with yt_dlp.YoutubeDL(sub_opts) as ydl:
-            ydl.extract_info(video_url, download=True)
-
-        # 查找下载的字幕文件
-        sub_path = output_dir / f"{video_id}.{lang}.json3"
-        if sub_path.exists():
-            logger.info(f"Subtitle downloaded: {sub_path}")
-            return sub_path
-
-        logger.warning(f"Subtitle file not found: {sub_path}")
-        return None
 
     def _extract_video_info(self, info: dict[str, Any]) -> VideoInfo:
         """
