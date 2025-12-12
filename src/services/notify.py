@@ -63,17 +63,19 @@ class NotificationService:
             hostname = socket.gethostname()
             ip = self._get_local_ip()
 
-            content = f"""# YouTube Audio API Started
+            content = f"""# 🚀 YouTube Audio API Started
 
-**Host**: {hostname} ({ip})
-**Version**: {version}
-**Time**: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+🖥️ **Host**: {hostname} ({ip})
+📦 **Version**: {version}
+🕐 **Time**: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 
-**Configuration**:
-- Concurrency: {self.settings.download_concurrency}
-- Task Interval: {self.settings.task_interval_min}-{self.settings.task_interval_max}s
-- File Retention: {self.settings.file_retention_days} days
-- PO Token: {self.settings.pot_server_url}
+⚙️ **Configuration**:
+> 📊 Concurrency: {self.settings.download_concurrency}
+> ⏳ Task Interval: {self.settings.task_interval_min}-{self.settings.task_interval_max}s
+> 🗂️ File Retention: {self.settings.file_retention_days} days
+> 🔑 PO Token: {self.settings.pot_server_url}
+
+✨ Service is ready to accept requests!
 """
             self.notifier.send_markdown(
                 webhook_url=self.webhook_url,
@@ -163,12 +165,22 @@ class NotificationService:
             return
 
         try:
-            content = f"""# Download Failed
+            # 获取视频标题（如果有）
+            title = task.video_info.title if task.video_info else "Unknown"
 
-**Video URL**: {task.video_url}
-**Error**: {error}
-**Retry Count**: {task.retry_count}
-**Task ID**: `{task.id}`
+            # 获取错误码（如果有）
+            error_code = task.error_code.value if task.error_code else "UNKNOWN"
+
+            content = f"""# ❌ Download Failed
+
+🎬 **Video**: {title}
+🔗 **Video URL**: {task.video_url}
+
+💥 **Error Code**: `{error_code}`
+📋 **Error Message**: {error}
+
+🔄 **Retry Count**: {task.retry_count}
+🆔 **Task ID**: `{task.id}`
 """
             self.notifier.send_markdown(
                 webhook_url=self.webhook_url,
@@ -186,13 +198,14 @@ class NotificationService:
             return
 
         try:
-            content = """# Cookie Expired Warning
+            content = """# ⚠️ Cookie Expired Warning
 
-YouTube cookie has expired. Some features may be limited:
-- Age-restricted videos cannot be downloaded
-- Member-only content cannot be downloaded
+🍪 YouTube cookie has expired. Some features may be limited:
 
-Please update the cookie file and restart the service.
+> ❌ Age-restricted videos cannot be downloaded
+> ❌ Member-only content cannot be downloaded
+
+🔧 Please update the cookie file and restart the service.
 """
             self.notifier.send_markdown(
                 webhook_url=self.webhook_url,
@@ -215,13 +228,13 @@ Please update the cookie file and restart the service.
             return
 
         try:
-            content = f"""# Low Disk Space Warning
+            content = f"""# ⚠️ Low Disk Space Warning
 
-Available disk space is running low.
+💾 Available disk space is running low!
 
-**Free Space**: {free_mb} MB
+📉 **Free Space**: {free_mb} MB
 
-Please clean up old files or expand storage.
+🔧 Please clean up old files or expand storage.
 """
             self.notifier.send_markdown(
                 webhook_url=self.webhook_url,
