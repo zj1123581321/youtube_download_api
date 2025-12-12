@@ -222,6 +222,7 @@ class YouTubeDownloader:
 
             # Extract video info
             video_info = self._extract_video_info(info)
+            logger.debug(f"Extracted video info: {video_info}")
 
             # Find downloaded files
             audio_path = self._find_audio_file(output_dir, video_id)
@@ -233,8 +234,10 @@ class YouTubeDownloader:
                 )
 
             logger.info(f"Download completed: {video_id}")
-            logger.debug(f"Audio: {audio_path}")
-            logger.debug(f"Transcript: {transcript_path}")
+            logger.info(f"Audio: {audio_path}")
+            logger.info(f"Transcript: {transcript_path}")
+            if not transcript_path:
+                logger.warning(f"No transcript found for video {video_id}")
 
             return DownloadResult(
                 video_info=video_info,
