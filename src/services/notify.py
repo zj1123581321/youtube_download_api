@@ -126,21 +126,21 @@ class NotificationService:
                 else "无字幕"
             )
 
-            content = f"""# Download Completed
+            content = f"""# ✅ Download Completed
 
-**Video**: {title}
-**Author**: {author}
-**Duration**: {duration}
+🎬 **Video**: {title}
+👤 **Author**: {author}
+⏱️ **Duration**: {duration}
 
-**Video URL**: {task.video_url}
+🔗 **Video URL**: {task.video_url}
 
-**Description**:
+📝 **Description**:
 > {description if description else "无描述"}
 
-**Audio**: {audio_url}
-**Transcript**: {transcript_url if task.transcript_file_id else "无字幕"}
+🎵 **Audio**: {audio_url}
+📄 **Transcript**: {transcript_url if task.transcript_file_id else "无字幕"}
 
-**Task ID**: `{task.id}`
+🆔 **Task ID**: `{task.id}`
 """
             self.notifier.send_markdown(
                 webhook_url=self.webhook_url,
