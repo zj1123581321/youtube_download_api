@@ -5,6 +5,7 @@ Provides async database operations using aiosqlite.
 """
 
 import json
+import sqlite3
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -44,7 +45,7 @@ class Database:
 
         self._connection = await aiosqlite.connect(
             self.db_path,
-            detect_types=aiosqlite.PARSE_DECLTYPES | aiosqlite.PARSE_COLNAMES,
+            detect_types=sqlite3.PARSE_DECLTYPES | sqlite3.PARSE_COLNAMES,
         )
         self._connection.row_factory = aiosqlite.Row
 

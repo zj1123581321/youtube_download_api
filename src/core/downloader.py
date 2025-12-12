@@ -97,13 +97,11 @@ class YouTubeDownloader:
                 logger.info(f"Using cookie file: {cookie_path}")
 
         # PO Token Provider configuration
+        # 配置 YouTube player client 和 PO Token provider
+        # extractor_args 值必须是字符串列表格式
         opts["extractor_args"] = {
-            "youtube": {
-                "player_client": ["mweb"],
-            },
-            "youtubepot-bgutilhttp": {
-                "base_url": self.settings.pot_server_url,
-            },
+            "youtube": ["player_client=mweb"],
+            "youtubepot-bgutilhttp": [f"base_url={self.settings.pot_server_url}"],
         }
 
         return opts
