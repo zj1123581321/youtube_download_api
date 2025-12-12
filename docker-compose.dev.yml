@@ -1,0 +1,12 @@
+version: "3.8"
+
+# Development compose file - only runs pot-provider
+# The main app runs locally for easier debugging
+
+services:
+  pot-provider:
+    image: brainicism/bgutil-ytdlp-pot-provider
+    container_name: pot-provider-dev
+    restart: unless-stopped
+    ports:
+      - "4416:4416"
