@@ -33,6 +33,10 @@ class Settings(BaseSettings):
     host: str = Field(default="0.0.0.0", description="Server host")
     port: int = Field(default=8000, description="Server port")
     debug: bool = Field(default=False, description="Debug mode")
+    base_url: str = Field(
+        default="http://localhost:8000",
+        description="Base URL for file download links (e.g., https://your-domain.com)",
+    )
 
     # ============ PO Token Service ============
     pot_server_url: str = Field(
@@ -66,6 +70,11 @@ class Settings(BaseSettings):
 
     # ============ Timezone ============
     tz: str = Field(default="Asia/Shanghai", description="Timezone")
+
+    # ============ TikHub API Configuration ============
+    tikhub_api_key: Optional[str] = Field(
+        default=None, description="TikHub API key for subtitle fetching"
+    )
 
     # ============ Optional Configuration ============
     cookie_file: Optional[str] = Field(

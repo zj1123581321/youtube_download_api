@@ -103,11 +103,43 @@ class NotificationService:
                 else "N/A"
             )
 
+            # 获取视频描述，截断过长内容
+            description = ""
+            if task.video_info and task.video_info.description:
+                desc = task.video_info.description
+                max_len = 200
+                if len(desc) > max_len:
+                    description = desc[:max_len] + "..."
+                else:
+                    description = desc
+
+            # 构建文件下载链接
+            base_url = self.settings.base_url.rstrip("/")
+            audio_url = (
+                f"{base_url}/api/v1/files/{task.audio_file_id}"
+                if task.audio_file_id
+                else "N/A"
+            )
+            transcript_url = (
+                f"{base_url}/api/v1/files/{task.transcript_file_id}"
+                if task.transcript_file_id
+                else "无字幕"
+            )
+
             content = f"""# Download Completed
 
 **Video**: {title}
 **Author**: {author}
 **Duration**: {duration}
+
+**Video URL**: {task.video_url}
+
+**Description**:
+> {description if description else "无描述"}
+
+**Audio**: [下载]({audio_url})
+**Transcript**: {f"[下载]({transcript_url})" if task.transcript_file_id else "无字幕"}
+
 **Task ID**: `{task.id}`
 """
             self.notifier.send_markdown(
