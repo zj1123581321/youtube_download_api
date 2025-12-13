@@ -216,7 +216,8 @@ class TestResourceCaching:
 
         # Should return immediately with cached status
         assert response.status == TaskStatus.COMPLETED
-        assert response.task_id.startswith("cached-")
+        assert response.task_id is None  # No task created for cache hits
+        assert response.cache_hit is True
         assert response.message == "Resources retrieved from cache"
         assert response.result is not None
         assert response.result.reused_audio is True
@@ -267,7 +268,8 @@ class TestResourceCaching:
 
         # Should create new task (transcript missing)
         assert response.status == TaskStatus.PENDING
-        assert not response.task_id.startswith("cached-")
+        assert response.task_id is not None  # Real task created
+        assert response.cache_hit is False
 
     @pytest.mark.asyncio
     async def test_cache_hit_audio_only_request(
@@ -314,7 +316,8 @@ class TestResourceCaching:
 
         # Should return immediately with cached status
         assert response.status == TaskStatus.COMPLETED
-        assert response.task_id.startswith("cached-")
+        assert response.task_id is None  # No task created for cache hits
+        assert response.cache_hit is True
         assert response.result.reused_audio is True
 
     @pytest.mark.asyncio

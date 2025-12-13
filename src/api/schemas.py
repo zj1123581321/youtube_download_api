@@ -133,13 +133,21 @@ class ErrorInfoResponse(BaseModel):
 class TaskResponse(BaseModel):
     """Response schema for task details."""
 
-    task_id: str
+    task_id: Optional[str] = Field(
+        None, description="Task ID (null for cache hits)"
+    )
     status: TaskStatus
     video_id: str
     video_url: Optional[str] = None
     video_info: Optional[VideoInfoResponse] = None
     files: Optional[FilesResponse] = None
     error: Optional[ErrorInfoResponse] = None
+
+    # Cache hit indicator
+    cache_hit: bool = Field(
+        default=False,
+        description="True if response is from cache (no task created)",
+    )
 
     # Request mode (what was requested)
     request: Optional[RequestModeResponse] = None

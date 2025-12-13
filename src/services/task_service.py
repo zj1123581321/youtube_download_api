@@ -198,7 +198,8 @@ class TaskService:
         # Build response
         now = datetime.now(timezone.utc)
         response = TaskResponse(
-            task_id=f"cached-{video_id}",  # Special ID indicating cache hit
+            task_id=None,  # No task created for cache hits
+            cache_hit=True,  # Indicate this is a cache hit
             status=TaskStatus.COMPLETED,
             video_id=video_id,
             video_url=video_url,

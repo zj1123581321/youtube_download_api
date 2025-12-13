@@ -139,12 +139,18 @@ curl -X POST http://localhost:8000/api/v1/tasks \
 | `reused_audio` | 音频是否来自缓存 |
 | `reused_transcript` | 字幕是否来自缓存 |
 
-当所有请求的资源都已存在时，`task_id` 会以 `cached-` 前缀返回，表示缓存命中。
+**缓存命中判断**
+
+当所有请求的资源都已存在时，响应会有以下特征：
+- `task_id: null` - 没有创建新任务
+- `cache_hit: true` - 明确标识为缓存命中
+- `status: "completed"` - 直接返回完成状态
 
 **响应**
 ```json
 {
   "task_id": "550e8400-e29b-41d4-a716-446655440000",
+  "cache_hit": false,
   "status": "pending",
   "video_id": "dQw4w9WgXcQ",
   "request": {
@@ -169,6 +175,7 @@ curl http://localhost:8000/api/v1/tasks/{task_id} \
 ```json
 {
   "task_id": "550e8400-e29b-41d4-a716-446655440000",
+  "cache_hit": false,
   "status": "completed",
   "video_id": "dQw4w9WgXcQ",
   "request": {
@@ -207,6 +214,7 @@ curl http://localhost:8000/api/v1/tasks/{task_id} \
 ```json
 {
   "task_id": "550e8400-e29b-41d4-a716-446655440000",
+  "cache_hit": false,
   "status": "completed",
   "video_id": "dQw4w9WgXcQ",
   "request": {
@@ -240,6 +248,7 @@ curl http://localhost:8000/api/v1/tasks/{task_id} \
 ```json
 {
   "task_id": "550e8400-e29b-41d4-a716-446655440000",
+  "cache_hit": false,
   "status": "completed",
   "video_id": "dQw4w9WgXcQ",
   "request": {
@@ -273,7 +282,8 @@ curl http://localhost:8000/api/v1/tasks/{task_id} \
 **响应 - 缓存命中（资源已存在，立即返回）**
 ```json
 {
-  "task_id": "cached-dQw4w9WgXcQ",
+  "task_id": null,
+  "cache_hit": true,
   "status": "completed",
   "video_id": "dQw4w9WgXcQ",
   "message": "Resources retrieved from cache",
@@ -307,6 +317,22 @@ curl http://localhost:8000/api/v1/tasks/{task_id} \
   },
   "expires_at": "2025-02-10T10:00:00+08:00"
 }
+```
+
+**客户端处理建议**
+
+```python
+response = create_task(video_url)
+
+if response.cache_hit:
+    # 缓存命中，直接使用文件
+    print("Cache hit! Files ready to use.")
+else:
+    # 新任务创建，需要轮询状态
+    task_id = response.task_id
+    while response.status in ["pending", "downloading"]:
+        response = get_task(task_id)
+        time.sleep(5)
 ```
 
 ### Webhook 回调
