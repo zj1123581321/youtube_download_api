@@ -2,6 +2,7 @@
 Download worker module.
 
 Background worker that processes download tasks from the queue.
+Only downloads what's needed - reuses existing files when available.
 """
 
 import asyncio
@@ -25,13 +26,13 @@ from src.db.models import (
     RETRY_CONFIG,
     Task,
     TaskStatus,
+    VideoInfo,
     is_retryable_error,
 )
 from src.services.callback_service import CallbackService
 from src.services.file_service import FileService
 from src.services.notify import NotificationService
 from src.services.task_service import TaskService
-from src.utils.helpers import get_expiry_time
 from src.utils.logger import logger
 
 
@@ -39,7 +40,7 @@ class DownloadWorker:
     """
     Background worker for processing download tasks.
 
-    Handles task execution, retry logic, and notifications.
+    Smart downloading: only downloads what's missing, reuses existing files.
     """
 
     def __init__(
@@ -97,11 +98,9 @@ class DownloadWorker:
 
     async def _process_next_task(self) -> None:
         """Process the next task from the queue."""
-        # Get next task from queue
         task = await self.task_service.get_next_task()
 
         if not task:
-            # No tasks, wait briefly
             await asyncio.sleep(1)
             return
 
@@ -109,21 +108,18 @@ class DownloadWorker:
         logger.info(f"Processing task: {task.id} ({task.video_id})")
 
         try:
-            # Update status to downloading
             await self.db.update_task_status(task.id, TaskStatus.DOWNLOADING)
 
-            # Execute download based on task mode
+            # Execute task (smart download - only what's needed)
             result = await self._execute_task(task)
 
-            # Save task completion
+            # Update task completion
             await self.db.update_task_completed(
                 task_id=task.id,
-                video_info=result["video_info"],
                 audio_file_id=result["audio_file_id"],
                 transcript_file_id=result["transcript_file_id"],
-                expires_at=get_expiry_time(self.settings.file_retention_days),
-                has_transcript=result["has_transcript"],
-                audio_fallback=result["audio_fallback"],
+                reused_audio=result["reused_audio"],
+                reused_transcript=result["reused_transcript"],
             )
 
             logger.info(f"Task {task.id} completed successfully")
@@ -133,7 +129,6 @@ class DownloadWorker:
             if task_updated:
                 await self.notify_service.notify_completed(task_updated)
 
-                # Send callback if configured
                 if task_updated.callback_url:
                     await self.callback_service.send_callback(task_updated)
 
@@ -149,7 +144,6 @@ class DownloadWorker:
         finally:
             self._current_task = None
 
-            # Random wait between tasks
             wait_time = random.uniform(
                 self.settings.task_interval_min,
                 self.settings.task_interval_max,
@@ -159,40 +153,65 @@ class DownloadWorker:
 
     async def _execute_task(self, task: Task) -> dict:
         """
-        Execute task based on its mode configuration.
+        Execute task with smart downloading.
 
-        Handles different modes:
-        - Full mode (include_audio=True, include_transcript=True): Download audio + fetch transcript
-        - Audio only (include_audio=True, include_transcript=False): Only download audio
-        - Transcript only (include_audio=False, include_transcript=True): Try to fetch transcript,
-          fallback to audio download if no transcript available
+        Only downloads what's missing. Reuses existing files when available.
+        Updates video_resource with metadata.
 
         Args:
             task: Task to execute.
 
         Returns:
-            Dict with keys: video_info, audio_file_id, transcript_file_id, has_transcript, audio_fallback
-
-        Raises:
-            DownloadError: If task execution fails.
+            Dict with: audio_file_id, transcript_file_id, reused_audio, reused_transcript
         """
-        # Determine execution mode
-        if not task.include_audio and task.include_transcript:
-            # Transcript-only mode: try to get transcript first
-            return await self._execute_transcript_only(task)
-        else:
-            # Full or audio-only mode
-            return await self._execute_download(task)
+        # Check what's already available (double-check, may have changed)
+        existing_files = await self.file_service.get_all_files_for_video(task.video_id)
+        existing_audio = existing_files.get("audio")
+        existing_transcript = existing_files.get("transcript")
 
-    async def _execute_transcript_only(self, task: Task) -> dict:
+        # Determine what we actually need to download
+        need_audio = task.include_audio and existing_audio is None
+        need_transcript = task.include_transcript and existing_transcript is None
+
+        # If nothing to download, just return existing files
+        if not need_audio and not need_transcript:
+            logger.info(f"Task {task.id}: All resources already exist, nothing to download")
+            return {
+                "audio_file_id": existing_audio.id if existing_audio else None,
+                "transcript_file_id": existing_transcript.id if existing_transcript else None,
+                "reused_audio": existing_audio is not None,
+                "reused_transcript": existing_transcript is not None,
+            }
+
+        logger.info(
+            f"Task {task.id}: need_audio={need_audio}, need_transcript={need_transcript}"
+        )
+
+        # Determine execution mode
+        if need_transcript and not need_audio:
+            # Only need transcript, try transcript-only first
+            return await self._execute_transcript_only(
+                task, existing_audio, existing_transcript
+            )
+        else:
+            # Need audio (and maybe transcript)
+            return await self._execute_download(
+                task, existing_audio, existing_transcript, need_audio, need_transcript
+            )
+
+    async def _execute_transcript_only(
+        self,
+        task: Task,
+        existing_audio: Optional[FileRecord],
+        existing_transcript: Optional[FileRecord],
+    ) -> dict:
         """
         Execute transcript-only mode.
 
-        First checks if transcript is available. If yes, only fetch transcript.
-        If no transcript available, fallback to downloading audio.
-
         Args:
             task: Task to execute.
+            existing_audio: Existing audio file (if any).
+            existing_transcript: Existing transcript file (if any).
 
         Returns:
             Dict with execution result.
@@ -200,46 +219,63 @@ class DownloadWorker:
         with tempfile.TemporaryDirectory() as temp_dir:
             output_dir = Path(temp_dir)
 
-            # Try to extract transcript only
             logger.info(f"Task {task.id}: Attempting transcript-only extraction")
             transcript_result = await self.downloader.extract_transcript_only(
                 video_url=task.video_url,
                 output_dir=output_dir,
             )
 
-            if transcript_result.has_transcript and transcript_result.transcript_path:
-                # Success: transcript available and fetched
-                logger.info(f"Task {task.id}: Transcript available, no audio download needed")
+            # Update video resource with metadata
+            await self._update_video_resource(
+                task.video_id,
+                transcript_result.video_info,
+                transcript_result.has_transcript,
+            )
 
-                # Save transcript file
+            if transcript_result.has_transcript and transcript_result.transcript_path:
+                logger.info(f"Task {task.id}: Transcript available")
+
                 lang = self._extract_language(transcript_result.transcript_path)
                 transcript_file = await self.file_service.create_file_record(
-                    task_id=task.id,
+                    video_id=task.video_id,
                     file_type=FileType.TRANSCRIPT,
                     source_path=transcript_result.transcript_path,
-                    metadata={"language": lang},
+                    language=lang,
                 )
 
                 return {
-                    "video_info": transcript_result.video_info,
-                    "audio_file_id": None,
+                    "audio_file_id": existing_audio.id if existing_audio else None,
                     "transcript_file_id": transcript_file.id,
-                    "has_transcript": True,
-                    "audio_fallback": False,
+                    "reused_audio": existing_audio is not None,
+                    "reused_transcript": False,
                 }
             else:
-                # No transcript available, fallback to audio download
-                logger.info(
-                    f"Task {task.id}: No transcript available, falling back to audio download"
+                # No transcript, fallback to audio download
+                logger.info(f"Task {task.id}: No transcript, falling back to audio")
+                return await self._execute_download(
+                    task, existing_audio, existing_transcript,
+                    need_audio=True, need_transcript=False,
+                    audio_fallback=True,
                 )
-                return await self._execute_download(task, audio_fallback=True)
 
-    async def _execute_download(self, task: Task, audio_fallback: bool = False) -> dict:
+    async def _execute_download(
+        self,
+        task: Task,
+        existing_audio: Optional[FileRecord],
+        existing_transcript: Optional[FileRecord],
+        need_audio: bool,
+        need_transcript: bool,
+        audio_fallback: bool = False,
+    ) -> dict:
         """
-        Execute audio download (with optional transcript fetch).
+        Execute audio download (with optional transcript).
 
         Args:
             task: Task to execute.
+            existing_audio: Existing audio file (if any).
+            existing_transcript: Existing transcript file (if any).
+            need_audio: Whether to download audio.
+            need_transcript: Whether to fetch transcript.
             audio_fallback: Whether this is a fallback from transcript-only mode.
 
         Returns:
@@ -248,13 +284,9 @@ class DownloadWorker:
         with tempfile.TemporaryDirectory() as temp_dir:
             output_dir = Path(temp_dir)
 
-            # Download with progress callback
             def progress_callback(progress: int) -> None:
                 task.progress = progress
                 logger.debug(f"Task {task.id} progress: {progress}%")
-
-            # Determine if we should fetch transcript
-            fetch_transcript = task.include_transcript
 
             result = await self.downloader.download(
                 video_url=task.video_url,
@@ -262,36 +294,70 @@ class DownloadWorker:
                 progress_callback=progress_callback,
             )
 
-            # Move audio file to permanent storage
-            audio_file: Optional[FileRecord] = None
-            if result.audio_path and result.audio_path.exists():
+            # Update video resource with metadata
+            has_transcript = bool(result.transcript_path and result.transcript_path.exists())
+            await self._update_video_resource(
+                task.video_id,
+                result.video_info,
+                has_transcript,
+            )
+
+            # Process audio file
+            audio_file_id = existing_audio.id if existing_audio else None
+            reused_audio = existing_audio is not None
+
+            if need_audio and result.audio_path and result.audio_path.exists():
                 audio_file = await self.file_service.create_file_record(
-                    task_id=task.id,
+                    video_id=task.video_id,
                     file_type=FileType.AUDIO,
                     source_path=result.audio_path,
-                    metadata={"bitrate": self.settings.audio_quality},
+                    quality=str(self.settings.audio_quality),
                 )
+                audio_file_id = audio_file.id
+                reused_audio = False
 
-            # Move transcript file if exists and transcript is requested
-            transcript_file: Optional[FileRecord] = None
-            has_transcript = False
-            if fetch_transcript and result.transcript_path and result.transcript_path.exists():
-                has_transcript = True
+            # Process transcript file
+            transcript_file_id = existing_transcript.id if existing_transcript else None
+            reused_transcript = existing_transcript is not None
+
+            if need_transcript and result.transcript_path and result.transcript_path.exists():
                 lang = self._extract_language(result.transcript_path)
                 transcript_file = await self.file_service.create_file_record(
-                    task_id=task.id,
+                    video_id=task.video_id,
                     file_type=FileType.TRANSCRIPT,
                     source_path=result.transcript_path,
-                    metadata={"language": lang},
+                    language=lang,
                 )
+                transcript_file_id = transcript_file.id
+                reused_transcript = False
 
             return {
-                "video_info": result.video_info,
-                "audio_file_id": audio_file.id if audio_file else None,
-                "transcript_file_id": transcript_file.id if transcript_file else None,
-                "has_transcript": has_transcript,
-                "audio_fallback": audio_fallback,
+                "audio_file_id": audio_file_id,
+                "transcript_file_id": transcript_file_id,
+                "reused_audio": reused_audio,
+                "reused_transcript": reused_transcript,
             }
+
+    async def _update_video_resource(
+        self,
+        video_id: str,
+        video_info: VideoInfo,
+        has_native_transcript: bool,
+    ) -> None:
+        """
+        Update video resource with metadata.
+
+        Args:
+            video_id: YouTube video ID.
+            video_info: Video metadata.
+            has_native_transcript: Whether video has native subtitles.
+        """
+        await self.db.update_video_resource(
+            video_id=video_id,
+            video_info=video_info,
+            has_native_transcript=has_native_transcript,
+        )
+        logger.debug(f"Updated video resource: {video_id}")
 
     async def _handle_download_error(self, task: Task, error: DownloadError) -> None:
         """
@@ -303,16 +369,13 @@ class DownloadWorker:
         """
         logger.error(f"Task {task.id} failed: {error.error_code.value} - {error.message}")
 
-        # Check if error is retryable
         if is_retryable_error(error.error_code):
             config = RETRY_CONFIG.get(error.error_code, {})
             max_retries = config.get("max_retries", 0)
 
             if task.retry_count < max_retries:
-                # Schedule retry
                 new_count = await self.db.increment_retry_count(task.id)
 
-                # Calculate retry delay
                 backoff = config.get("backoff", [60])
                 delay_idx = min(new_count - 1, len(backoff) - 1)
                 base_delay = backoff[delay_idx]
@@ -324,12 +387,10 @@ class DownloadWorker:
                     f"in {retry_delay:.0f}s"
                 )
 
-                # Re-add to queue after delay
                 await asyncio.sleep(retry_delay)
                 await self.task_service.task_queue.put(task.id)
                 return
 
-        # Mark as failed
         await self.db.update_task_status(
             task_id=task.id,
             status=TaskStatus.FAILED,
@@ -337,12 +398,10 @@ class DownloadWorker:
             error_message=error.message,
         )
 
-        # Send failure notification
         task_updated = await self.db.get_task(task.id)
         if task_updated:
             await self.notify_service.notify_failed(task_updated, error.message)
 
-            # Send callback for failure
             if task_updated.callback_url:
                 await self.callback_service.send_callback(task_updated)
 
@@ -356,7 +415,6 @@ class DownloadWorker:
         Returns:
             Language code.
         """
-        # Filename format: {video_id}.{lang}.json3
         parts = filepath.stem.split(".")
         if len(parts) >= 2:
             return parts[-1]

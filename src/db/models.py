@@ -1,7 +1,8 @@
 """
 Database models and enums.
 
-Defines data structures for tasks and files stored in SQLite.
+Defines data structures for video resources, files, and tasks.
+Architecture: Video -> Files <- Task (video owns files, tasks reference files)
 """
 
 from dataclasses import dataclass, field
@@ -99,18 +100,54 @@ class VideoInfo:
 
 
 @dataclass
+class VideoResource:
+    """
+    Video resource entity - the core entity.
+
+    One video_id corresponds to one record, storing video metadata.
+    Files are associated with video_id, not task_id.
+    """
+
+    video_id: str  # YouTube video ID (primary key)
+    video_info: Optional[VideoInfo] = None  # Video metadata
+    has_native_transcript: Optional[bool] = None  # Whether video has native subtitles (cached)
+
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+
+    def to_dict(self) -> dict[str, Any]:
+        """Convert to dictionary for JSON serialization."""
+        return {
+            "video_id": self.video_id,
+            "video_info": self.video_info.to_dict() if self.video_info else None,
+            "has_native_transcript": self.has_native_transcript,
+        }
+
+
+@dataclass
 class FileRecord:
-    """File record in database."""
+    """
+    File record entity - resource entity.
 
-    id: str  # UUID for URL
-    task_id: str
-    type: FileType
+    Files are indexed by video_id, supporting multiple files per video.
+    Unique constraint: (video_id, file_type, quality, language)
+    """
+
+    id: str  # UUID for download URL
+    video_id: str  # Associated video (not task_id anymore)
+    file_type: FileType  # audio / transcript
+
+    # File attributes
     filename: str  # Actual filename
-    filepath: str  # Relative path
+    filepath: str  # Relative path from data_dir
     size: Optional[int] = None  # File size in bytes
-    format: Optional[str] = None  # m4a / json
-    metadata: Optional[dict[str, Any]] = None  # Additional metadata
+    format: Optional[str] = None  # m4a / srt
 
+    # Extended attributes (for future multi-version support)
+    quality: Optional[str] = None  # Audio: 128 / 320
+    language: Optional[str] = None  # Transcript: en / zh
+
+    # Lifecycle
     created_at: Optional[datetime] = None
     last_accessed_at: Optional[datetime] = None
     expires_at: Optional[datetime] = None
@@ -118,27 +155,29 @@ class FileRecord:
 
 @dataclass
 class Task:
-    """Task record in database."""
+    """
+    Task record entity - request entity.
+
+    Tasks are triggers that reference existing resources or trigger new downloads.
+    Tasks don't own files; they reference files via file_ids.
+    """
 
     id: str  # UUID
     video_id: str  # YouTube video ID
     video_url: str  # Original URL
     status: TaskStatus = TaskStatus.PENDING
 
-    # Request mode configuration
+    # Request parameters (what client wants)
     include_audio: bool = True  # Whether to download audio
     include_transcript: bool = True  # Whether to fetch transcript
 
-    # Result info (populated after execution)
-    has_transcript: Optional[bool] = None  # Whether video has available transcript
-    audio_fallback: bool = False  # Whether audio was downloaded as fallback
-
-    # Video info (populated after download)
-    video_info: Optional[VideoInfo] = None
-
-    # File references
+    # File references (pointing to files table, may reuse existing files)
     audio_file_id: Optional[str] = None
     transcript_file_id: Optional[str] = None
+
+    # Reuse flags (for statistics/debugging)
+    reused_audio: bool = False  # Whether audio file was reused
+    reused_transcript: bool = False  # Whether transcript file was reused
 
     # Callback configuration
     callback_url: Optional[str] = None
@@ -155,7 +194,6 @@ class Task:
     created_at: Optional[datetime] = None
     started_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
-    expires_at: Optional[datetime] = None
 
     # Progress tracking (not persisted)
     progress: int = field(default=0, compare=False)

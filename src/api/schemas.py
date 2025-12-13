@@ -112,6 +112,14 @@ class ResultInfoResponse(BaseModel):
         default=False,
         description="Whether audio was downloaded as fallback (transcript_only mode but no transcript available)",
     )
+    reused_audio: bool = Field(
+        default=False,
+        description="Whether audio file was retrieved from cache",
+    )
+    reused_transcript: bool = Field(
+        default=False,
+        description="Whether transcript file was retrieved from cache",
+    )
 
 
 class ErrorInfoResponse(BaseModel):

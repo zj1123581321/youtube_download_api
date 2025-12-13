@@ -2,6 +2,7 @@
 SQLite database connection and operations.
 
 Provides async database operations using aiosqlite.
+Architecture: Video -> Files <- Task (video owns files, tasks reference files)
 """
 
 import json
@@ -21,6 +22,7 @@ from src.db.models import (
     Task,
     TaskStatus,
     VideoInfo,
+    VideoResource,
 )
 from src.utils.logger import logger
 
@@ -95,7 +97,38 @@ class Database:
     async def _create_tables(self) -> None:
         """Create database tables if not exist."""
         async with self.transaction():
-            # Tasks table
+            # Video resources table (core entity)
+            await self.execute("""
+                CREATE TABLE IF NOT EXISTS video_resources (
+                    video_id TEXT PRIMARY KEY,
+                    video_info TEXT,
+                    has_native_transcript INTEGER,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+
+            # Files table (indexed by video_id, not task_id)
+            await self.execute("""
+                CREATE TABLE IF NOT EXISTS files (
+                    id TEXT PRIMARY KEY,
+                    video_id TEXT NOT NULL,
+                    file_type TEXT NOT NULL,
+                    filename TEXT NOT NULL,
+                    filepath TEXT NOT NULL,
+                    size INTEGER,
+                    format TEXT,
+                    quality TEXT,
+                    language TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    last_accessed_at TIMESTAMP,
+                    expires_at TIMESTAMP,
+                    FOREIGN KEY (video_id) REFERENCES video_resources(video_id),
+                    UNIQUE(video_id, file_type, quality, language)
+                )
+            """)
+
+            # Tasks table (request entity, references files)
             await self.execute("""
                 CREATE TABLE IF NOT EXISTS tasks (
                     id TEXT PRIMARY KEY,
@@ -104,11 +137,10 @@ class Database:
                     status TEXT NOT NULL DEFAULT 'pending',
                     include_audio INTEGER DEFAULT 1,
                     include_transcript INTEGER DEFAULT 1,
-                    has_transcript INTEGER,
-                    audio_fallback INTEGER DEFAULT 0,
-                    video_info TEXT,
                     audio_file_id TEXT,
                     transcript_file_id TEXT,
+                    reused_audio INTEGER DEFAULT 0,
+                    reused_transcript INTEGER DEFAULT 0,
                     callback_url TEXT,
                     callback_secret TEXT,
                     callback_status TEXT,
@@ -119,29 +151,25 @@ class Database:
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     started_at TIMESTAMP,
                     completed_at TIMESTAMP,
-                    expires_at TIMESTAMP
-                )
-            """)
-
-            # Files table
-            await self.execute("""
-                CREATE TABLE IF NOT EXISTS files (
-                    id TEXT PRIMARY KEY,
-                    task_id TEXT NOT NULL,
-                    type TEXT NOT NULL,
-                    filename TEXT NOT NULL,
-                    filepath TEXT NOT NULL,
-                    size INTEGER,
-                    format TEXT,
-                    metadata TEXT,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    last_accessed_at TIMESTAMP,
-                    expires_at TIMESTAMP,
-                    FOREIGN KEY (task_id) REFERENCES tasks(id)
+                    FOREIGN KEY (video_id) REFERENCES video_resources(video_id),
+                    FOREIGN KEY (audio_file_id) REFERENCES files(id),
+                    FOREIGN KEY (transcript_file_id) REFERENCES files(id)
                 )
             """)
 
             # Create indexes
+            await self.execute(
+                "CREATE INDEX IF NOT EXISTS idx_video_resources_updated ON video_resources(updated_at)"
+            )
+            await self.execute(
+                "CREATE INDEX IF NOT EXISTS idx_files_video_id ON files(video_id)"
+            )
+            await self.execute(
+                "CREATE INDEX IF NOT EXISTS idx_files_expires ON files(expires_at)"
+            )
+            await self.execute(
+                "CREATE INDEX IF NOT EXISTS idx_files_last_accessed ON files(last_accessed_at)"
+            )
             await self.execute(
                 "CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status)"
             )
@@ -151,18 +179,256 @@ class Database:
             await self.execute(
                 "CREATE INDEX IF NOT EXISTS idx_tasks_created_at ON tasks(created_at)"
             )
+
+    # ==================== Video Resource Operations ====================
+
+    async def get_video_resource(self, video_id: str) -> Optional[VideoResource]:
+        """
+        Get video resource by video ID.
+
+        Args:
+            video_id: YouTube video ID.
+
+        Returns:
+            VideoResource or None if not found.
+        """
+        cursor = await self.execute(
+            "SELECT * FROM video_resources WHERE video_id = ?", (video_id,)
+        )
+        row = await cursor.fetchone()
+        return self._row_to_video_resource(row) if row else None
+
+    async def create_video_resource(self, resource: VideoResource) -> None:
+        """
+        Create a new video resource record.
+
+        Args:
+            resource: VideoResource object to create.
+        """
+        video_info_json = (
+            json.dumps(resource.video_info.to_dict()) if resource.video_info else None
+        )
+        now = datetime.now(timezone.utc)
+
+        async with self.transaction():
             await self.execute(
-                "CREATE INDEX IF NOT EXISTS idx_tasks_expires_at ON tasks(expires_at)"
+                """
+                INSERT INTO video_resources (
+                    video_id, video_info, has_native_transcript, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    resource.video_id,
+                    video_info_json,
+                    1 if resource.has_native_transcript else (0 if resource.has_native_transcript is False else None),
+                    resource.created_at or now,
+                    resource.updated_at or now,
+                ),
             )
+        logger.debug(f"Video resource created: {resource.video_id}")
+
+    async def update_video_resource(
+        self,
+        video_id: str,
+        video_info: Optional[VideoInfo] = None,
+        has_native_transcript: Optional[bool] = None,
+    ) -> None:
+        """
+        Update video resource information.
+
+        Args:
+            video_id: YouTube video ID.
+            video_info: Video metadata to update.
+            has_native_transcript: Whether video has native subtitles.
+        """
+        now = datetime.now(timezone.utc)
+        updates = ["updated_at = ?"]
+        params: list[Any] = [now]
+
+        if video_info is not None:
+            updates.append("video_info = ?")
+            params.append(json.dumps(video_info.to_dict()))
+
+        if has_native_transcript is not None:
+            updates.append("has_native_transcript = ?")
+            params.append(1 if has_native_transcript else 0)
+
+        params.append(video_id)
+
+        async with self.transaction():
             await self.execute(
-                "CREATE INDEX IF NOT EXISTS idx_files_task_id ON files(task_id)"
+                f"UPDATE video_resources SET {', '.join(updates)} WHERE video_id = ?",
+                tuple(params),
             )
+        logger.debug(f"Video resource updated: {video_id}")
+
+    async def get_or_create_video_resource(self, video_id: str) -> VideoResource:
+        """
+        Get existing video resource or create a new one.
+
+        Args:
+            video_id: YouTube video ID.
+
+        Returns:
+            VideoResource object.
+        """
+        existing = await self.get_video_resource(video_id)
+        if existing:
+            return existing
+
+        now = datetime.now(timezone.utc)
+        resource = VideoResource(
+            video_id=video_id,
+            created_at=now,
+            updated_at=now,
+        )
+        await self.create_video_resource(resource)
+        return resource
+
+    # ==================== File Operations ====================
+
+    async def create_file(self, file: FileRecord) -> None:
+        """
+        Create a new file record.
+
+        Args:
+            file: File record to create.
+        """
+        async with self.transaction():
             await self.execute(
-                "CREATE INDEX IF NOT EXISTS idx_files_expires_at ON files(expires_at)"
+                """
+                INSERT INTO files (
+                    id, video_id, file_type, filename, filepath, size, format,
+                    quality, language, created_at, last_accessed_at, expires_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    file.id,
+                    file.video_id,
+                    file.file_type.value,
+                    file.filename,
+                    file.filepath,
+                    file.size,
+                    file.format,
+                    file.quality,
+                    file.language,
+                    file.created_at or datetime.now(timezone.utc),
+                    file.last_accessed_at,
+                    file.expires_at,
+                ),
             )
+        logger.debug(f"File record created: {file.id} ({file.file_type.value})")
+
+    async def get_file(self, file_id: str) -> Optional[FileRecord]:
+        """
+        Get file by ID.
+
+        Args:
+            file_id: File UUID.
+
+        Returns:
+            FileRecord or None if not found.
+        """
+        cursor = await self.execute("SELECT * FROM files WHERE id = ?", (file_id,))
+        row = await cursor.fetchone()
+        return self._row_to_file(row) if row else None
+
+    async def get_file_by_video(
+        self,
+        video_id: str,
+        file_type: FileType,
+        quality: Optional[str] = None,
+        language: Optional[str] = None,
+    ) -> Optional[FileRecord]:
+        """
+        Get file by video ID and type.
+
+        Args:
+            video_id: YouTube video ID.
+            file_type: Type of file (audio/transcript).
+            quality: Audio quality (optional).
+            language: Transcript language (optional).
+
+        Returns:
+            FileRecord or None if not found.
+        """
+        # Build query based on parameters
+        sql = "SELECT * FROM files WHERE video_id = ? AND file_type = ?"
+        params: list[Any] = [video_id, file_type.value]
+
+        if quality is not None:
+            sql += " AND quality = ?"
+            params.append(quality)
+        else:
+            sql += " AND (quality IS NULL OR quality = '')"
+
+        if language is not None:
+            sql += " AND language = ?"
+            params.append(language)
+
+        cursor = await self.execute(sql, tuple(params))
+        row = await cursor.fetchone()
+        return self._row_to_file(row) if row else None
+
+    async def get_files_by_video(self, video_id: str) -> list[FileRecord]:
+        """
+        Get all files for a video.
+
+        Args:
+            video_id: YouTube video ID.
+
+        Returns:
+            List of file records.
+        """
+        cursor = await self.execute(
+            "SELECT * FROM files WHERE video_id = ?", (video_id,)
+        )
+        rows = await cursor.fetchall()
+        return [self._row_to_file(row) for row in rows]
+
+    async def update_file_access_time(self, file_id: str) -> None:
+        """
+        Update file last access time.
+
+        Args:
+            file_id: File UUID.
+        """
+        async with self.transaction():
             await self.execute(
-                "CREATE INDEX IF NOT EXISTS idx_files_last_accessed ON files(last_accessed_at)"
+                "UPDATE files SET last_accessed_at = ? WHERE id = ?",
+                (datetime.now(timezone.utc), file_id),
             )
+
+    async def get_expired_files(self, cutoff_time: datetime) -> list[FileRecord]:
+        """
+        Get files that haven't been accessed since cutoff time.
+
+        Args:
+            cutoff_time: Cutoff datetime for last access.
+
+        Returns:
+            List of expired file records.
+        """
+        cursor = await self.execute(
+            """
+            SELECT * FROM files
+            WHERE last_accessed_at < ? OR (last_accessed_at IS NULL AND created_at < ?)
+            """,
+            (cutoff_time, cutoff_time),
+        )
+        rows = await cursor.fetchall()
+        return [self._row_to_file(row) for row in rows]
+
+    async def delete_file(self, file_id: str) -> None:
+        """
+        Delete file record.
+
+        Args:
+            file_id: File UUID.
+        """
+        async with self.transaction():
+            await self.execute("DELETE FROM files WHERE id = ?", (file_id,))
+        logger.debug(f"File record deleted: {file_id}")
 
     # ==================== Task Operations ====================
 
@@ -173,19 +439,17 @@ class Database:
         Args:
             task: Task object to create.
         """
-        video_info_json = (
-            json.dumps(task.video_info.to_dict()) if task.video_info else None
-        )
-
         async with self.transaction():
             await self.execute(
                 """
                 INSERT INTO tasks (
                     id, video_id, video_url, status,
                     include_audio, include_transcript,
-                    video_info, callback_url, callback_secret, callback_status,
-                    created_at, expires_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    audio_file_id, transcript_file_id,
+                    reused_audio, reused_transcript,
+                    callback_url, callback_secret, callback_status,
+                    created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     task.id,
@@ -194,12 +458,14 @@ class Database:
                     task.status.value,
                     1 if task.include_audio else 0,
                     1 if task.include_transcript else 0,
-                    video_info_json,
+                    task.audio_file_id,
+                    task.transcript_file_id,
+                    1 if task.reused_audio else 0,
+                    1 if task.reused_transcript else 0,
                     task.callback_url,
                     task.callback_secret,
                     task.callback_status.value if task.callback_status else None,
                     task.created_at or datetime.now(timezone.utc),
-                    task.expires_at,
                 ),
             )
         logger.debug(f"Task created: {task.id}")
@@ -218,40 +484,25 @@ class Database:
         row = await cursor.fetchone()
         return self._row_to_task(row) if row else None
 
-    async def get_task_by_video_id(
-        self, video_id: str, active_only: bool = True
-    ) -> Optional[Task]:
+    async def get_active_task_by_video(self, video_id: str) -> Optional[Task]:
         """
-        Find task by video ID.
+        Find active (pending/downloading) task by video ID.
 
         Args:
             video_id: YouTube video ID.
-            active_only: Only return active (non-failed) tasks.
 
         Returns:
             Task object or None if not found.
         """
-        if active_only:
-            cursor = await self.execute(
-                """
-                SELECT * FROM tasks
-                WHERE video_id = ? AND status NOT IN ('failed', 'cancelled')
-                ORDER BY created_at DESC
-                LIMIT 1
-                """,
-                (video_id,),
-            )
-        else:
-            cursor = await self.execute(
-                """
-                SELECT * FROM tasks
-                WHERE video_id = ?
-                ORDER BY created_at DESC
-                LIMIT 1
-                """,
-                (video_id,),
-            )
-
+        cursor = await self.execute(
+            """
+            SELECT * FROM tasks
+            WHERE video_id = ? AND status IN ('pending', 'downloading')
+            ORDER BY created_at DESC
+            LIMIT 1
+            """,
+            (video_id,),
+        )
         row = await cursor.fetchone()
         return self._row_to_task(row) if row else None
 
@@ -272,7 +523,6 @@ class Database:
         Returns:
             Tuple of (tasks list, total count).
         """
-        # Build query
         where_clause = "WHERE 1=1"
         params: list[Any] = []
 
@@ -280,13 +530,11 @@ class Database:
             where_clause += " AND status = ?"
             params.append(status.value)
 
-        # Get total count
         count_cursor = await self.execute(
             f"SELECT COUNT(*) FROM tasks {where_clause}", tuple(params)
         )
         total = (await count_cursor.fetchone())[0]
 
-        # Get tasks
         params.extend([limit, offset])
         cursor = await self.execute(
             f"""
@@ -380,46 +628,38 @@ class Database:
     async def update_task_completed(
         self,
         task_id: str,
-        video_info: VideoInfo,
-        audio_file_id: Optional[str],
-        transcript_file_id: Optional[str],
-        expires_at: datetime,
-        has_transcript: bool = True,
-        audio_fallback: bool = False,
+        audio_file_id: Optional[str] = None,
+        transcript_file_id: Optional[str] = None,
+        reused_audio: bool = False,
+        reused_transcript: bool = False,
     ) -> None:
         """
-        Update task as completed with file information.
+        Update task as completed with file references.
 
         Args:
             task_id: Task UUID.
-            video_info: Video information.
-            audio_file_id: Audio file UUID (may be None for transcript_only mode).
+            audio_file_id: Audio file UUID (may be None).
             transcript_file_id: Transcript file UUID (may be None).
-            expires_at: File expiry time.
-            has_transcript: Whether video has available transcript.
-            audio_fallback: Whether audio was downloaded as fallback.
+            reused_audio: Whether audio file was reused.
+            reused_transcript: Whether transcript file was reused.
         """
         now = datetime.now(timezone.utc)
-        video_info_json = json.dumps(video_info.to_dict())
 
         async with self.transaction():
             await self.execute(
                 """
                 UPDATE tasks
-                SET status = ?, video_info = ?, audio_file_id = ?,
-                    transcript_file_id = ?, completed_at = ?, expires_at = ?,
-                    has_transcript = ?, audio_fallback = ?
+                SET status = ?, audio_file_id = ?, transcript_file_id = ?,
+                    reused_audio = ?, reused_transcript = ?, completed_at = ?
                 WHERE id = ?
                 """,
                 (
                     TaskStatus.COMPLETED.value,
-                    video_info_json,
                     audio_file_id,
                     transcript_file_id,
+                    1 if reused_audio else 0,
+                    1 if reused_transcript else 0,
                     now,
-                    expires_at,
-                    1 if has_transcript else 0,
-                    1 if audio_fallback else 0,
                     task_id,
                 ),
             )
@@ -516,117 +756,11 @@ class Database:
                     (status.value, task_id),
                 )
 
-    # ==================== File Operations ====================
-
-    async def create_file(self, file: FileRecord) -> None:
-        """
-        Create a new file record.
-
-        Args:
-            file: File record to create.
-        """
-        metadata_json = json.dumps(file.metadata) if file.metadata else None
-
-        async with self.transaction():
-            await self.execute(
-                """
-                INSERT INTO files (
-                    id, task_id, type, filename, filepath, size, format,
-                    metadata, created_at, expires_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    file.id,
-                    file.task_id,
-                    file.type.value,
-                    file.filename,
-                    file.filepath,
-                    file.size,
-                    file.format,
-                    metadata_json,
-                    file.created_at or datetime.now(timezone.utc),
-                    file.expires_at,
-                ),
-            )
-
-        logger.debug(f"File record created: {file.id}")
-
-    async def get_file(self, file_id: str) -> Optional[FileRecord]:
-        """
-        Get file by ID.
-
-        Args:
-            file_id: File UUID.
-
-        Returns:
-            FileRecord or None if not found.
-        """
-        cursor = await self.execute("SELECT * FROM files WHERE id = ?", (file_id,))
-        row = await cursor.fetchone()
-        return self._row_to_file(row) if row else None
-
-    async def get_files_by_task(self, task_id: str) -> list[FileRecord]:
-        """
-        Get all files for a task.
-
-        Args:
-            task_id: Task UUID.
-
-        Returns:
-            List of file records.
-        """
-        cursor = await self.execute(
-            "SELECT * FROM files WHERE task_id = ?", (task_id,)
-        )
-        rows = await cursor.fetchall()
-        return [self._row_to_file(row) for row in rows]
-
-    async def update_file_access_time(self, file_id: str) -> None:
-        """
-        Update file last access time.
-
-        Args:
-            file_id: File UUID.
-        """
-        async with self.transaction():
-            await self.execute(
-                "UPDATE files SET last_accessed_at = ? WHERE id = ?",
-                (datetime.now(timezone.utc), file_id),
-            )
-
-    async def get_expired_files(self, cutoff_time: datetime) -> list[FileRecord]:
-        """
-        Get files that haven't been accessed since cutoff time.
-
-        Args:
-            cutoff_time: Cutoff datetime for last access.
-
-        Returns:
-            List of expired file records.
-        """
-        cursor = await self.execute(
-            """
-            SELECT * FROM files
-            WHERE last_accessed_at < ? OR (last_accessed_at IS NULL AND created_at < ?)
-            """,
-            (cutoff_time, cutoff_time),
-        )
-        rows = await cursor.fetchall()
-        return [self._row_to_file(row) for row in rows]
-
-    async def delete_file(self, file_id: str) -> None:
-        """
-        Delete file record.
-
-        Args:
-            file_id: File UUID.
-        """
-        async with self.transaction():
-            await self.execute("DELETE FROM files WHERE id = ?", (file_id,))
+    # ==================== Cleanup Operations ====================
 
     async def delete_expired_tasks(self, cutoff_time: datetime) -> int:
         """
-        Delete expired tasks with no remaining files.
+        Delete expired tasks (completed tasks older than cutoff).
 
         Args:
             cutoff_time: Cutoff datetime.
@@ -635,18 +769,35 @@ class Database:
             Number of tasks deleted.
         """
         async with self.transaction():
-            # Delete tasks that are expired and have no files
             cursor = await self.execute(
                 """
                 DELETE FROM tasks
-                WHERE expires_at < ?
-                AND id NOT IN (SELECT DISTINCT task_id FROM files)
+                WHERE status = 'completed' AND completed_at < ?
                 """,
                 (cutoff_time,),
             )
             count = cursor.rowcount
             if count > 0:
                 logger.info(f"Deleted {count} expired tasks")
+            return count
+
+    async def delete_orphan_video_resources(self) -> int:
+        """
+        Delete video resources with no files.
+
+        Returns:
+            Number of resources deleted.
+        """
+        async with self.transaction():
+            cursor = await self.execute(
+                """
+                DELETE FROM video_resources
+                WHERE video_id NOT IN (SELECT DISTINCT video_id FROM files)
+                """
+            )
+            count = cursor.rowcount
+            if count > 0:
+                logger.info(f"Deleted {count} orphan video resources")
             return count
 
     # ==================== Statistics ====================
@@ -674,34 +825,62 @@ class Database:
 
         return stats
 
+    async def get_resource_stats(self) -> dict[str, int]:
+        """
+        Get resource statistics.
+
+        Returns:
+            Dictionary with video, file, and task counts.
+        """
+        video_cursor = await self.execute("SELECT COUNT(*) FROM video_resources")
+        video_count = (await video_cursor.fetchone())[0]
+
+        file_cursor = await self.execute("SELECT COUNT(*) FROM files")
+        file_count = (await file_cursor.fetchone())[0]
+
+        task_cursor = await self.execute("SELECT COUNT(*) FROM tasks")
+        task_count = (await task_cursor.fetchone())[0]
+
+        return {
+            "videos": video_count,
+            "files": file_count,
+            "tasks": task_count,
+        }
+
     # ==================== Helper Methods ====================
 
-    def _row_to_task(self, row: aiosqlite.Row) -> Task:
-        """Convert database row to Task object."""
+    def _row_to_video_resource(self, row: aiosqlite.Row) -> VideoResource:
+        """Convert database row to VideoResource object."""
         video_info = None
         if row["video_info"]:
             video_info = VideoInfo.from_dict(json.loads(row["video_info"]))
 
-        # Handle new fields with backwards compatibility
-        include_audio = row["include_audio"] if "include_audio" in row.keys() else 1
-        include_transcript = (
-            row["include_transcript"] if "include_transcript" in row.keys() else 1
-        )
-        has_transcript = row["has_transcript"] if "has_transcript" in row.keys() else None
-        audio_fallback = row["audio_fallback"] if "audio_fallback" in row.keys() else 0
+        has_native = row["has_native_transcript"]
+        has_native_transcript = None
+        if has_native is not None:
+            has_native_transcript = bool(has_native)
 
+        return VideoResource(
+            video_id=row["video_id"],
+            video_info=video_info,
+            has_native_transcript=has_native_transcript,
+            created_at=row["created_at"],
+            updated_at=row["updated_at"],
+        )
+
+    def _row_to_task(self, row: aiosqlite.Row) -> Task:
+        """Convert database row to Task object."""
         return Task(
             id=row["id"],
             video_id=row["video_id"],
             video_url=row["video_url"],
             status=TaskStatus(row["status"]),
-            include_audio=bool(include_audio),
-            include_transcript=bool(include_transcript),
-            has_transcript=bool(has_transcript) if has_transcript is not None else None,
-            audio_fallback=bool(audio_fallback),
-            video_info=video_info,
+            include_audio=bool(row["include_audio"]),
+            include_transcript=bool(row["include_transcript"]),
             audio_file_id=row["audio_file_id"],
             transcript_file_id=row["transcript_file_id"],
+            reused_audio=bool(row["reused_audio"]),
+            reused_transcript=bool(row["reused_transcript"]),
             callback_url=row["callback_url"],
             callback_secret=row["callback_secret"],
             callback_status=CallbackStatus(row["callback_status"])
@@ -714,24 +893,20 @@ class Database:
             created_at=row["created_at"],
             started_at=row["started_at"],
             completed_at=row["completed_at"],
-            expires_at=row["expires_at"],
         )
 
     def _row_to_file(self, row: aiosqlite.Row) -> FileRecord:
         """Convert database row to FileRecord object."""
-        metadata = None
-        if row["metadata"]:
-            metadata = json.loads(row["metadata"])
-
         return FileRecord(
             id=row["id"],
-            task_id=row["task_id"],
-            type=FileType(row["type"]),
+            video_id=row["video_id"],
+            file_type=FileType(row["file_type"]),
             filename=row["filename"],
             filepath=row["filepath"],
             size=row["size"],
             format=row["format"],
-            metadata=metadata,
+            quality=row["quality"],
+            language=row["language"],
             created_at=row["created_at"],
             last_accessed_at=row["last_accessed_at"],
             expires_at=row["expires_at"],

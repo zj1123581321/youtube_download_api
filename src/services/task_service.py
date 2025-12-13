@@ -1,7 +1,9 @@
 """
 Task service module.
 
-Handles task creation, querying, and management logic.
+Handles task creation, querying, and resource-based deduplication.
+Implements file-level caching: if requested resources already exist,
+returns them without creating a new download task.
 """
 
 import asyncio
@@ -22,8 +24,9 @@ from src.api.schemas import (
 )
 from src.config import Settings
 from src.db.database import Database
-from src.db.models import CallbackStatus, Task, TaskStatus
-from src.utils.helpers import extract_video_id, get_expiry_time
+from src.db.models import CallbackStatus, FileType, Task, TaskStatus
+from src.services.file_service import FileService
+from src.utils.helpers import extract_video_id
 from src.utils.logger import logger
 
 
@@ -31,19 +34,22 @@ class TaskService:
     """
     Service for managing download tasks.
 
-    Handles task creation, deduplication, status queries, and lifecycle management.
+    Implements resource-based caching: checks if requested files already exist
+    before creating download tasks. Files are shared across tasks for the same video.
     """
 
-    def __init__(self, db: Database, settings: Settings):
+    def __init__(self, db: Database, settings: Settings, file_service: FileService):
         """
         Initialize task service.
 
         Args:
             db: Database instance.
             settings: Application settings.
+            file_service: File service for resource management.
         """
         self.db = db
         self.settings = settings
+        self.file_service = file_service
         # Task queue for worker to consume
         self._task_queue: asyncio.Queue[str] = asyncio.Queue()
 
@@ -54,31 +60,56 @@ class TaskService:
 
     async def create_task(self, request: CreateTaskRequest) -> TaskResponse:
         """
-        Create a new download task or return existing one.
+        Create a new download task or return cached resources.
 
-        Implements deduplication: if a task for the same video already exists
-        and is not failed/cancelled, returns the existing task.
+        Resource-based caching logic:
+        1. Check if requested files already exist for this video
+        2. If all needed files exist -> return immediately with cached resources
+        3. If some files missing -> create task to download missing files
+        4. If active task exists for same video -> return existing task
 
         Args:
             request: Task creation request.
 
         Returns:
-            TaskResponse with task details.
+            TaskResponse with task details or cached resources.
         """
         video_id = extract_video_id(request.video_url)
         if not video_id:
             raise ValueError("Invalid YouTube URL")
 
-        # Check for existing task (deduplication)
-        existing = await self.db.get_task_by_video_id(video_id, active_only=True)
+        # Check existing resources for this video
+        existing_files = await self.file_service.get_all_files_for_video(video_id)
+        existing_audio = existing_files.get("audio")
+        existing_transcript = existing_files.get("transcript")
 
-        if existing:
-            logger.info(f"Found existing task for video {video_id}: {existing.id}")
-            response = await self._build_task_response(existing)
-            response.message = "Task already exists"
+        # Determine what we need
+        need_audio = request.include_audio and existing_audio is None
+        need_transcript = request.include_transcript and existing_transcript is None
+
+        # If all requested resources exist, return immediately (cache hit)
+        if not need_audio and not need_transcript:
+            logger.info(f"Cache hit for video {video_id}: all requested resources exist")
+            return await self._build_cached_response(
+                video_id=video_id,
+                video_url=request.video_url,
+                request=request,
+                audio_file=existing_audio,
+                transcript_file=existing_transcript,
+            )
+
+        # Check for active (pending/downloading) task for same video
+        active_task = await self.db.get_active_task_by_video(video_id)
+        if active_task:
+            logger.info(f"Found active task for video {video_id}: {active_task.id}")
+            response = await self._build_task_response(active_task)
+            response.message = "Task already in progress"
             return response
 
-        # Create new task
+        # Ensure video resource exists
+        await self.db.get_or_create_video_resource(video_id)
+
+        # Create new task with pre-filled existing resources
         task = Task(
             id=str(uuid4()),
             video_id=video_id,
@@ -86,6 +117,11 @@ class TaskService:
             status=TaskStatus.PENDING,
             include_audio=request.include_audio,
             include_transcript=request.include_transcript,
+            # Pre-fill existing resources
+            audio_file_id=existing_audio.id if existing_audio else None,
+            transcript_file_id=existing_transcript.id if existing_transcript else None,
+            reused_audio=existing_audio is not None,
+            reused_transcript=existing_transcript is not None,
             callback_url=str(request.callback_url) if request.callback_url else None,
             callback_secret=request.callback_secret,
             callback_status=CallbackStatus.PENDING if request.callback_url else None,
@@ -93,13 +129,110 @@ class TaskService:
         )
 
         await self.db.create_task(task)
-        logger.info(f"Created new task: {task.id} for video {video_id}")
+        logger.info(
+            f"Created task {task.id} for video {video_id} "
+            f"(need_audio={need_audio}, need_transcript={need_transcript}, "
+            f"reused_audio={task.reused_audio}, reused_transcript={task.reused_transcript})"
+        )
 
         # Add to queue for worker
         await self._task_queue.put(task.id)
 
-        # Build response with queue position
+        # Build response
         response = await self._build_task_response(task)
+        return response
+
+    async def _build_cached_response(
+        self,
+        video_id: str,
+        video_url: str,
+        request: CreateTaskRequest,
+        audio_file,
+        transcript_file,
+    ) -> TaskResponse:
+        """
+        Build response for cache hit (all resources exist).
+
+        Args:
+            video_id: YouTube video ID.
+            video_url: Original video URL.
+            request: Original request.
+            audio_file: Existing audio FileRecord (or None).
+            transcript_file: Existing transcript FileRecord (or None).
+
+        Returns:
+            TaskResponse with cached resources.
+        """
+        # Get video resource for metadata
+        video_resource = await self.db.get_video_resource(video_id)
+
+        # Build response
+        now = datetime.now(timezone.utc)
+        response = TaskResponse(
+            task_id=f"cached-{video_id}",  # Special ID indicating cache hit
+            status=TaskStatus.COMPLETED,
+            video_id=video_id,
+            video_url=video_url,
+            created_at=now,
+            completed_at=now,
+            message="Resources retrieved from cache",
+            request=RequestModeResponse(
+                include_audio=request.include_audio,
+                include_transcript=request.include_transcript,
+            ),
+            result=ResultInfoResponse(
+                has_transcript=transcript_file is not None,
+                audio_fallback=False,
+                reused_audio=audio_file is not None if request.include_audio else False,
+                reused_transcript=transcript_file is not None if request.include_transcript else False,
+            ),
+        )
+
+        # Add video info if available
+        if video_resource and video_resource.video_info:
+            info = video_resource.video_info
+            response.video_info = VideoInfoResponse(
+                title=info.title,
+                author=info.author,
+                channel_id=info.channel_id,
+                duration=info.duration,
+                description=info.description,
+                upload_date=info.upload_date,
+                view_count=info.view_count,
+                thumbnail=info.thumbnail,
+            )
+
+        # Build files response
+        audio_info = None
+        if audio_file and request.include_audio:
+            audio_info = FileInfoResponse(
+                url=f"/api/v1/files/{audio_file.id}",
+                size=audio_file.size,
+                format=audio_file.format,
+                bitrate=audio_file.quality,
+            )
+
+        transcript_info = None
+        if transcript_file and request.include_transcript:
+            transcript_info = FileInfoResponse(
+                url=f"/api/v1/files/{transcript_file.id}",
+                size=transcript_file.size,
+                format=transcript_file.format,
+                language=transcript_file.language,
+            )
+
+        if audio_info or transcript_info:
+            response.files = FilesResponse(
+                audio=audio_info,
+                transcript=transcript_info,
+            )
+
+        # Set expiry based on file expiry
+        if audio_file:
+            response.expires_at = audio_file.expires_at
+        elif transcript_file:
+            response.expires_at = transcript_file.expires_at
+
         return response
 
     async def get_task(self, task_id: str) -> Optional[TaskResponse]:
@@ -241,8 +374,6 @@ class TaskService:
             created_at=task.created_at or datetime.now(timezone.utc),
             started_at=task.started_at,
             completed_at=task.completed_at,
-            expires_at=task.expires_at,
-            # Request mode
             request=RequestModeResponse(
                 include_audio=task.include_audio,
                 include_transcript=task.include_transcript,
@@ -265,39 +396,49 @@ class TaskService:
 
         # Add video info and files for completed tasks
         elif task.status == TaskStatus.COMPLETED:
-            if task.video_info:
+            # Get video resource for metadata
+            video_resource = await self.db.get_video_resource(task.video_id)
+            if video_resource and video_resource.video_info:
+                info = video_resource.video_info
                 response.video_info = VideoInfoResponse(
-                    title=task.video_info.title,
-                    author=task.video_info.author,
-                    channel_id=task.video_info.channel_id,
-                    duration=task.video_info.duration,
-                    description=task.video_info.description,
-                    upload_date=task.video_info.upload_date,
-                    view_count=task.video_info.view_count,
-                    thumbnail=task.video_info.thumbnail,
+                    title=info.title,
+                    author=info.author,
+                    channel_id=info.channel_id,
+                    duration=info.duration,
+                    description=info.description,
+                    upload_date=info.upload_date,
+                    view_count=info.view_count,
+                    thumbnail=info.thumbnail,
                 )
 
-            # Add result info
-            if task.has_transcript is not None:
-                response.result = ResultInfoResponse(
-                    has_transcript=task.has_transcript,
-                    audio_fallback=task.audio_fallback,
-                )
+            # Build result info
+            # Determine has_transcript based on whether transcript file exists
+            has_transcript = task.transcript_file_id is not None
+            # audio_fallback: requested transcript only but got audio instead
+            audio_fallback = (
+                not task.include_audio
+                and task.include_transcript
+                and task.audio_file_id is not None
+                and task.transcript_file_id is None
+            )
+
+            response.result = ResultInfoResponse(
+                has_transcript=has_transcript,
+                audio_fallback=audio_fallback,
+                reused_audio=task.reused_audio,
+                reused_transcript=task.reused_transcript,
+            )
 
             # Get file info
-            files = await self.db.get_files_by_task(task.id)
-            audio_file = (
-                next((f for f in files if f.id == task.audio_file_id), None)
-                if task.audio_file_id
-                else None
-            )
-            transcript_file = (
-                next((f for f in files if f.id == task.transcript_file_id), None)
-                if task.transcript_file_id
-                else None
-            )
+            audio_file = None
+            transcript_file = None
 
-            # Build files response if any file exists
+            if task.audio_file_id:
+                audio_file = await self.db.get_file(task.audio_file_id)
+            if task.transcript_file_id:
+                transcript_file = await self.db.get_file(task.transcript_file_id)
+
+            # Build files response
             if audio_file or transcript_file:
                 audio_info = None
                 if audio_file:
@@ -305,9 +446,7 @@ class TaskService:
                         url=f"/api/v1/files/{audio_file.id}",
                         size=audio_file.size,
                         format=audio_file.format,
-                        bitrate=audio_file.metadata.get("bitrate")
-                        if audio_file.metadata
-                        else None,
+                        bitrate=audio_file.quality,
                     )
 
                 transcript_info = None
@@ -316,15 +455,19 @@ class TaskService:
                         url=f"/api/v1/files/{transcript_file.id}",
                         size=transcript_file.size,
                         format=transcript_file.format,
-                        language=transcript_file.metadata.get("language")
-                        if transcript_file.metadata
-                        else None,
+                        language=transcript_file.language,
                     )
 
                 response.files = FilesResponse(
                     audio=audio_info,
                     transcript=transcript_info,
                 )
+
+            # Set expiry
+            if audio_file:
+                response.expires_at = audio_file.expires_at
+            elif transcript_file:
+                response.expires_at = transcript_file.expires_at
 
         # Add error info for failed tasks
         elif task.status == TaskStatus.FAILED:

@@ -15,6 +15,7 @@ from fastapi.testclient import TestClient
 from src.config import Settings
 from src.db.database import Database
 from src.db.models import Task, TaskStatus, VideoInfo
+from src.services.file_service import FileService
 
 
 @pytest.fixture(scope="session")
@@ -56,6 +57,14 @@ async def test_db(temp_dir: Path) -> AsyncGenerator[Database, None]:
     await db.connect()
     yield db
     await db.disconnect()
+
+
+@pytest_asyncio.fixture
+async def file_service(
+    test_db: Database, test_settings: Settings
+) -> FileService:
+    """Create file service for testing."""
+    return FileService(test_db, test_settings)
 
 
 @pytest.fixture

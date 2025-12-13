@@ -69,10 +69,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     await db.reset_downloading_tasks()
 
     # Initialize services
-    task_service = TaskService(db, settings)
     file_service = FileService(db, settings)
-    callback_service = CallbackService(db)
-    notify_service = NotificationService(settings)
+    task_service = TaskService(db, settings, file_service)
+    callback_service = CallbackService(db, file_service)
+    notify_service = NotificationService(settings, db)
 
     # Set services for API routes
     set_services(task_service, file_service)

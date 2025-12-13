@@ -6,12 +6,15 @@ Handles sending notifications to WeCom (Enterprise WeChat) webhook.
 
 import socket
 from datetime import datetime
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 from src.config import Settings
-from src.db.models import Task
+from src.db.models import Task, VideoInfo
 from src.utils.helpers import format_duration
 from src.utils.logger import logger
+
+if TYPE_CHECKING:
+    from src.db.database import Database
 
 # Try to import wecom_notifier, but make it optional
 try:
@@ -30,14 +33,16 @@ class NotificationService:
     Sends notifications for startup, task completion, and failures.
     """
 
-    def __init__(self, settings: Settings):
+    def __init__(self, settings: Settings, db: Optional["Database"] = None):
         """
         Initialize notification service.
 
         Args:
             settings: Application settings.
+            db: Database instance for fetching video info.
         """
         self.settings = settings
+        self.db = db
         self.webhook_url = settings.wecom_webhook_url
         self.enabled = bool(settings.wecom_webhook_url) and WECOM_AVAILABLE
 
@@ -86,6 +91,21 @@ class NotificationService:
         except Exception as e:
             logger.error(f"Failed to send startup notification: {e}")
 
+    async def _get_video_info(self, video_id: str) -> Optional[VideoInfo]:
+        """
+        Get video info from database.
+
+        Args:
+            video_id: YouTube video ID.
+
+        Returns:
+            VideoInfo or None.
+        """
+        if not self.db:
+            return None
+        video_resource = await self.db.get_video_resource(video_id)
+        return video_resource.video_info if video_resource else None
+
     async def notify_completed(self, task: Task) -> None:
         """
         Send task completion notification.
@@ -97,18 +117,19 @@ class NotificationService:
             return
 
         try:
-            title = task.video_info.title if task.video_info else "Unknown"
-            author = task.video_info.author if task.video_info else "Unknown"
+            video_info = await self._get_video_info(task.video_id)
+            title = video_info.title if video_info else "Unknown"
+            author = video_info.author if video_info else "Unknown"
             duration = (
-                format_duration(task.video_info.duration)
-                if task.video_info and task.video_info.duration
+                format_duration(video_info.duration)
+                if video_info and video_info.duration
                 else "N/A"
             )
 
             # 获取视频描述，截断过长内容
             description = ""
-            if task.video_info and task.video_info.description:
-                desc = task.video_info.description
+            if video_info and video_info.description:
+                desc = video_info.description
                 max_len = 200
                 if len(desc) > max_len:
                     description = desc[:max_len] + "..."
@@ -166,7 +187,8 @@ class NotificationService:
 
         try:
             # 获取视频标题（如果有）
-            title = task.video_info.title if task.video_info else "Unknown"
+            video_info = await self._get_video_info(task.video_id)
+            title = video_info.title if video_info else "Unknown"
 
             # 获取错误码（如果有）
             error_code = task.error_code.value if task.error_code else "UNKNOWN"

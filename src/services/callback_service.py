@@ -9,7 +9,7 @@ import hashlib
 import hmac
 import json
 import time
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any, Optional
 
 import httpx
 
@@ -24,6 +24,9 @@ from src.db.database import Database
 from src.db.models import CallbackStatus, Task, TaskStatus
 from src.utils.logger import logger
 
+if TYPE_CHECKING:
+    from src.services.file_service import FileService
+
 
 class CallbackService:
     """
@@ -37,15 +40,22 @@ class CallbackService:
     MAX_RETRIES = 3
     RETRY_DELAYS = [5, 10, 20]  # seconds
 
-    def __init__(self, db: Database, base_url: str = ""):
+    def __init__(
+        self,
+        db: Database,
+        file_service: Optional["FileService"] = None,
+        base_url: str = "",
+    ):
         """
         Initialize callback service.
 
         Args:
             db: Database instance.
+            file_service: File service for getting file info.
             base_url: Base URL for file downloads.
         """
         self.db = db
+        self.file_service = file_service
         self.base_url = base_url.rstrip("/")
 
     async def send_callback(self, task: Task) -> bool:
@@ -61,7 +71,7 @@ class CallbackService:
         if not task.callback_url:
             return True
 
-        payload = self._build_payload(task)
+        payload = await self._build_payload(task)
         success = False
         attempts = 0
 
@@ -152,7 +162,7 @@ class CallbackService:
         ).hexdigest()
         return f"sha256={signature}"
 
-    def _build_payload(self, task: Task) -> CallbackPayload:
+    async def _build_payload(self, task: Task) -> CallbackPayload:
         """
         Build callback payload from task.
 
@@ -162,25 +172,43 @@ class CallbackService:
         Returns:
             CallbackPayload object.
         """
+        # Get file info for expires_at
+        expires_at = None
+        audio_file = None
+        transcript_file = None
+
+        if task.audio_file_id:
+            audio_file = await self.db.get_file(task.audio_file_id)
+            if audio_file:
+                expires_at = audio_file.expires_at
+
+        if task.transcript_file_id:
+            transcript_file = await self.db.get_file(task.transcript_file_id)
+            if transcript_file and not expires_at:
+                expires_at = transcript_file.expires_at
+
         payload = CallbackPayload(
             task_id=task.id,
             status=task.status,
             video_id=task.video_id,
-            expires_at=task.expires_at,
+            expires_at=expires_at,
         )
 
         # Add video info for completed tasks
-        if task.status == TaskStatus.COMPLETED and task.video_info:
-            payload.video_info = VideoInfoResponse(
-                title=task.video_info.title,
-                author=task.video_info.author,
-                channel_id=task.video_info.channel_id,
-                duration=task.video_info.duration,
-                description=task.video_info.description,
-                upload_date=task.video_info.upload_date,
-                view_count=task.video_info.view_count,
-                thumbnail=task.video_info.thumbnail,
-            )
+        if task.status == TaskStatus.COMPLETED:
+            video_resource = await self.db.get_video_resource(task.video_id)
+            if video_resource and video_resource.video_info:
+                video_info = video_resource.video_info
+                payload.video_info = VideoInfoResponse(
+                    title=video_info.title,
+                    author=video_info.author,
+                    channel_id=video_info.channel_id,
+                    duration=video_info.duration,
+                    description=video_info.description,
+                    upload_date=video_info.upload_date,
+                    view_count=video_info.view_count,
+                    thumbnail=video_info.thumbnail,
+                )
 
             # Add file URLs (with base URL for external access)
             if task.audio_file_id:
@@ -192,9 +220,19 @@ class CallbackService:
                     )
 
                 payload.files = FilesResponse(
-                    audio=FileInfoResponse(url=audio_url, size=None, format="m4a"),
+                    audio=FileInfoResponse(
+                        url=audio_url,
+                        size=audio_file.size if audio_file else None,
+                        format="m4a",
+                        bitrate=None,
+                        language=None,
+                    ),
                     transcript=FileInfoResponse(
-                        url=transcript_url, size=None, format="json"
+                        url=transcript_url,
+                        size=transcript_file.size if transcript_file else None,
+                        format="json",
+                        bitrate=None,
+                        language=transcript_file.language if transcript_file else None,
                     )
                     if transcript_url
                     else None,

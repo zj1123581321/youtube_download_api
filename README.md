@@ -7,6 +7,8 @@ Docker 部署的 YouTube 音频下载服务，提供 RESTful API 接口，支持
 - **RESTful API** - 完整的任务管理接口，X-API-Key 鉴权
 - **音频下载** - M4A 格式，128kbps 高质量音频
 - **字幕提取** - JSON 格式，优先中英文字幕
+- **灵活下载模式** - 支持仅音频/仅字幕/完整模式
+- **智能资源复用** - 文件级缓存，同视频资源跨任务共享
 - **风控绕过** - TLS 指纹模拟 + PO Token 机制
 - **任务队列** - 异步处理，支持并发控制和错误重试
 - **双模式通知** - Webhook 回调 + 轮询查询
@@ -112,6 +114,33 @@ curl -X POST http://localhost:8000/api/v1/tasks \
 | `false` | `true` | 仅获取字幕，若无字幕则自动下载音频 |
 | `false` | `false` | 无效请求，返回错误 |
 
+**资源复用机制**
+
+系统采用文件级缓存策略，同一视频的资源可跨任务复用：
+
+```
+第一次请求 video_id=ABC (audio+transcript)
+  → 下载音频，获取字幕
+  → 存储: video_resources[ABC] → files[audio], files[transcript]
+
+第二次请求 video_id=ABC (audio only)
+  → 检测到音频已存在
+  → 立即返回缓存，无需下载
+
+第三次请求 video_id=ABC (transcript only)
+  → 检测到字幕已存在
+  → 立即返回缓存，无需下载
+```
+
+响应中的 `result` 字段表明资源来源：
+
+| 字段 | 说明 |
+|------|------|
+| `reused_audio` | 音频是否来自缓存 |
+| `reused_transcript` | 字幕是否来自缓存 |
+
+当所有请求的资源都已存在时，`task_id` 会以 `cached-` 前缀返回，表示缓存命中。
+
 **响应**
 ```json
 {
@@ -148,7 +177,9 @@ curl http://localhost:8000/api/v1/tasks/{task_id} \
   },
   "result": {
     "has_transcript": true,
-    "audio_fallback": false
+    "audio_fallback": false,
+    "reused_audio": false,
+    "reused_transcript": false
   },
   "video_info": {
     "title": "Rick Astley - Never Gonna Give You Up",
@@ -184,7 +215,9 @@ curl http://localhost:8000/api/v1/tasks/{task_id} \
   },
   "result": {
     "has_transcript": true,
-    "audio_fallback": false
+    "audio_fallback": false,
+    "reused_audio": false,
+    "reused_transcript": false
   },
   "video_info": {
     "title": "Rick Astley - Never Gonna Give You Up",
@@ -215,7 +248,9 @@ curl http://localhost:8000/api/v1/tasks/{task_id} \
   },
   "result": {
     "has_transcript": false,
-    "audio_fallback": true
+    "audio_fallback": true,
+    "reused_audio": false,
+    "reused_transcript": false
   },
   "video_info": {
     "title": "Rick Astley - Never Gonna Give You Up",
@@ -230,6 +265,45 @@ curl http://localhost:8000/api/v1/tasks/{task_id} \
       "bitrate": 128
     },
     "transcript": null
+  },
+  "expires_at": "2025-02-10T10:00:00+08:00"
+}
+```
+
+**响应 - 缓存命中（资源已存在，立即返回）**
+```json
+{
+  "task_id": "cached-dQw4w9WgXcQ",
+  "status": "completed",
+  "video_id": "dQw4w9WgXcQ",
+  "message": "Resources retrieved from cache",
+  "request": {
+    "include_audio": true,
+    "include_transcript": true
+  },
+  "result": {
+    "has_transcript": true,
+    "audio_fallback": false,
+    "reused_audio": true,
+    "reused_transcript": true
+  },
+  "video_info": {
+    "title": "Rick Astley - Never Gonna Give You Up",
+    "author": "Rick Astley",
+    "duration": 213
+  },
+  "files": {
+    "audio": {
+      "url": "/api/v1/files/abc123",
+      "size": 3456789,
+      "format": "m4a",
+      "bitrate": 128
+    },
+    "transcript": {
+      "url": "/api/v1/files/def456",
+      "size": 12345,
+      "language": "en"
+    }
   },
   "expires_at": "2025-02-10T10:00:00+08:00"
 }
