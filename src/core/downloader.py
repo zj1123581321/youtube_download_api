@@ -86,8 +86,17 @@ class DownloadResult:
     """Result of a download operation."""
 
     video_info: VideoInfo
-    audio_path: Path
+    audio_path: Optional[Path] = None  # May be None for transcript_only mode
     transcript_path: Optional[Path] = None
+
+
+@dataclass
+class TranscriptOnlyResult:
+    """Result of transcript-only extraction (no audio download)."""
+
+    video_info: VideoInfo
+    has_transcript: bool  # Whether video has available transcript
+    transcript_path: Optional[Path] = None  # Path to subtitle file if fetched
 
 
 @dataclass
@@ -98,6 +107,16 @@ class _AudioDownloadResult:
     audio_path: Path
     video_id: str
     raw_info: dict[str, Any]  # Raw yt-dlp info for subtitle URL extraction
+
+
+@dataclass
+class _InfoExtractionResult:
+    """Internal result of video info extraction (no download)."""
+
+    video_info: VideoInfo
+    video_id: str
+    raw_info: dict[str, Any]  # Raw yt-dlp info for subtitle URL extraction
+    has_subtitle: bool  # Whether video has available subtitles
 
 
 class DownloadError(Exception):
@@ -318,6 +337,132 @@ class YouTubeDownloader:
             # Catch all exceptions to ensure subtitle failure doesn't affect audio
             logger.warning(f"Failed to fetch subtitle via TikHub: {e}")
             return None
+
+    async def extract_transcript_only(
+        self,
+        video_url: str,
+        output_dir: Path,
+    ) -> TranscriptOnlyResult:
+        """
+        Extract video info and fetch transcript only (no audio download).
+
+        This is used for transcript_only mode where client only wants subtitles.
+        If subtitles are available, they are fetched via TikHub API.
+
+        Args:
+            video_url: YouTube video URL.
+            output_dir: Directory to save subtitle file.
+
+        Returns:
+            TranscriptOnlyResult with video info and subtitle status.
+
+        Raises:
+            DownloadError: If video info extraction fails.
+        """
+        if self.settings.dry_run:
+            logger.info(f"Dry run: would extract transcript for {video_url}")
+            return TranscriptOnlyResult(
+                video_info=VideoInfo(
+                    title="Test Video (Dry Run)",
+                    author="Test Author",
+                    duration=60,
+                ),
+                has_transcript=True,
+                transcript_path=output_dir / "test.en.srt",
+            )
+
+        # Ensure output directory exists
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        try:
+            # Extract video info without downloading
+            loop = asyncio.get_event_loop()
+            info_result = await loop.run_in_executor(
+                None, self._extract_info_only, video_url
+            )
+
+            if not info_result.has_subtitle:
+                logger.info(
+                    f"No subtitle available for video {info_result.video_id}, "
+                    "audio download required for ASR"
+                )
+                return TranscriptOnlyResult(
+                    video_info=info_result.video_info,
+                    has_transcript=False,
+                    transcript_path=None,
+                )
+
+            # Fetch subtitle via TikHub API
+            transcript_path = await self._fetch_subtitle_via_tikhub(
+                info_result.raw_info,
+                output_dir,
+                info_result.video_id,
+            )
+
+            logger.info(f"Transcript extraction completed: {info_result.video_id}")
+            logger.info(f"Transcript: {transcript_path}")
+
+            return TranscriptOnlyResult(
+                video_info=info_result.video_info,
+                has_transcript=True,
+                transcript_path=transcript_path,
+            )
+
+        except yt_dlp.utils.DownloadError as e:
+            error_code, message = self._map_ytdlp_error(e)
+            logger.error(f"Info extraction failed: {error_code.value} - {message}")
+            raise DownloadError(error_code, message) from e
+
+        except Exception as e:
+            logger.error(f"Unexpected error during info extraction: {e}")
+            raise DownloadError(ErrorCode.DOWNLOAD_FAILED, str(e)) from e
+
+    def _extract_info_only(self, video_url: str) -> _InfoExtractionResult:
+        """
+        Extract video info without downloading (runs in thread pool).
+
+        Args:
+            video_url: YouTube video URL.
+
+        Returns:
+            _InfoExtractionResult with video info and subtitle availability.
+        """
+        logger.info(f"[POT] Extracting info for: {video_url}")
+
+        # Build minimal options for info extraction
+        opts = {
+            **self._base_opts,
+            "skip_download": True,
+        }
+
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            logger.info("[POT] Calling extract_info (info only, no download)")
+            info = ydl.extract_info(video_url, download=False)
+
+            if not info:
+                raise DownloadError(
+                    ErrorCode.DOWNLOAD_FAILED, "Failed to extract video info"
+                )
+
+            video_id = info["id"]
+            video_info = self._extract_video_info(info)
+
+            # Check if subtitles are available
+            has_subtitle = bool(
+                info.get("subtitles") or info.get("automatic_captions")
+            )
+
+            logger.info(
+                f"[POT] Video {video_id}: has_subtitle={has_subtitle}, "
+                f"title='{info.get('title', 'N/A')[:50]}'"
+            )
+
+            return _InfoExtractionResult(
+                video_info=video_info,
+                video_id=video_id,
+                raw_info=info,
+                has_subtitle=has_subtitle,
+            )
 
     def _build_download_opts(
         self,

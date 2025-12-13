@@ -102,6 +102,10 @@ class Database:
                     video_id TEXT NOT NULL,
                     video_url TEXT NOT NULL,
                     status TEXT NOT NULL DEFAULT 'pending',
+                    include_audio INTEGER DEFAULT 1,
+                    include_transcript INTEGER DEFAULT 1,
+                    has_transcript INTEGER,
+                    audio_fallback INTEGER DEFAULT 0,
                     video_info TEXT,
                     audio_file_id TEXT,
                     transcript_file_id TEXT,
@@ -177,16 +181,19 @@ class Database:
             await self.execute(
                 """
                 INSERT INTO tasks (
-                    id, video_id, video_url, status, video_info,
-                    callback_url, callback_secret, callback_status,
+                    id, video_id, video_url, status,
+                    include_audio, include_transcript,
+                    video_info, callback_url, callback_secret, callback_status,
                     created_at, expires_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     task.id,
                     task.video_id,
                     task.video_url,
                     task.status.value,
+                    1 if task.include_audio else 0,
+                    1 if task.include_transcript else 0,
                     video_info_json,
                     task.callback_url,
                     task.callback_secret,
@@ -374,9 +381,11 @@ class Database:
         self,
         task_id: str,
         video_info: VideoInfo,
-        audio_file_id: str,
+        audio_file_id: Optional[str],
         transcript_file_id: Optional[str],
         expires_at: datetime,
+        has_transcript: bool = True,
+        audio_fallback: bool = False,
     ) -> None:
         """
         Update task as completed with file information.
@@ -384,9 +393,11 @@ class Database:
         Args:
             task_id: Task UUID.
             video_info: Video information.
-            audio_file_id: Audio file UUID.
+            audio_file_id: Audio file UUID (may be None for transcript_only mode).
             transcript_file_id: Transcript file UUID (may be None).
             expires_at: File expiry time.
+            has_transcript: Whether video has available transcript.
+            audio_fallback: Whether audio was downloaded as fallback.
         """
         now = datetime.now(timezone.utc)
         video_info_json = json.dumps(video_info.to_dict())
@@ -396,7 +407,8 @@ class Database:
                 """
                 UPDATE tasks
                 SET status = ?, video_info = ?, audio_file_id = ?,
-                    transcript_file_id = ?, completed_at = ?, expires_at = ?
+                    transcript_file_id = ?, completed_at = ?, expires_at = ?,
+                    has_transcript = ?, audio_fallback = ?
                 WHERE id = ?
                 """,
                 (
@@ -406,6 +418,8 @@ class Database:
                     transcript_file_id,
                     now,
                     expires_at,
+                    1 if has_transcript else 0,
+                    1 if audio_fallback else 0,
                     task_id,
                 ),
             )
@@ -668,11 +682,23 @@ class Database:
         if row["video_info"]:
             video_info = VideoInfo.from_dict(json.loads(row["video_info"]))
 
+        # Handle new fields with backwards compatibility
+        include_audio = row["include_audio"] if "include_audio" in row.keys() else 1
+        include_transcript = (
+            row["include_transcript"] if "include_transcript" in row.keys() else 1
+        )
+        has_transcript = row["has_transcript"] if "has_transcript" in row.keys() else None
+        audio_fallback = row["audio_fallback"] if "audio_fallback" in row.keys() else 0
+
         return Task(
             id=row["id"],
             video_id=row["video_id"],
             video_url=row["video_url"],
             status=TaskStatus(row["status"]),
+            include_audio=bool(include_audio),
+            include_transcript=bool(include_transcript),
+            has_transcript=bool(has_transcript) if has_transcript is not None else None,
+            audio_fallback=bool(audio_fallback),
             video_info=video_info,
             audio_file_id=row["audio_file_id"],
             transcript_file_id=row["transcript_file_id"],

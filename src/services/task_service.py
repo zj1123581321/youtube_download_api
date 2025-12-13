@@ -14,6 +14,8 @@ from src.api.schemas import (
     ErrorInfoResponse,
     FileInfoResponse,
     FilesResponse,
+    RequestModeResponse,
+    ResultInfoResponse,
     TaskListResponse,
     TaskResponse,
     VideoInfoResponse,
@@ -82,6 +84,8 @@ class TaskService:
             video_id=video_id,
             video_url=request.video_url,
             status=TaskStatus.PENDING,
+            include_audio=request.include_audio,
+            include_transcript=request.include_transcript,
             callback_url=str(request.callback_url) if request.callback_url else None,
             callback_secret=request.callback_secret,
             callback_status=CallbackStatus.PENDING if request.callback_url else None,
@@ -238,6 +242,11 @@ class TaskService:
             started_at=task.started_at,
             completed_at=task.completed_at,
             expires_at=task.expires_at,
+            # Request mode
+            request=RequestModeResponse(
+                include_audio=task.include_audio,
+                include_transcript=task.include_transcript,
+            ),
         )
 
         # Add queue position for pending tasks
@@ -268,18 +277,29 @@ class TaskService:
                     thumbnail=task.video_info.thumbnail,
                 )
 
-            # Get file info
-            if task.audio_file_id:
-                files = await self.db.get_files_by_task(task.id)
-                audio_file = next(
-                    (f for f in files if f.id == task.audio_file_id), None
-                )
-                transcript_file = (
-                    next((f for f in files if f.id == task.transcript_file_id), None)
-                    if task.transcript_file_id
-                    else None
+            # Add result info
+            if task.has_transcript is not None:
+                response.result = ResultInfoResponse(
+                    has_transcript=task.has_transcript,
+                    audio_fallback=task.audio_fallback,
                 )
 
+            # Get file info
+            files = await self.db.get_files_by_task(task.id)
+            audio_file = (
+                next((f for f in files if f.id == task.audio_file_id), None)
+                if task.audio_file_id
+                else None
+            )
+            transcript_file = (
+                next((f for f in files if f.id == task.transcript_file_id), None)
+                if task.transcript_file_id
+                else None
+            )
+
+            # Build files response if any file exists
+            if audio_file or transcript_file:
+                audio_info = None
                 if audio_file:
                     audio_info = FileInfoResponse(
                         url=f"/api/v1/files/{audio_file.id}",
@@ -290,21 +310,21 @@ class TaskService:
                         else None,
                     )
 
-                    transcript_info = None
-                    if transcript_file:
-                        transcript_info = FileInfoResponse(
-                            url=f"/api/v1/files/{transcript_file.id}",
-                            size=transcript_file.size,
-                            format=transcript_file.format,
-                            language=transcript_file.metadata.get("language")
-                            if transcript_file.metadata
-                            else None,
-                        )
-
-                    response.files = FilesResponse(
-                        audio=audio_info,
-                        transcript=transcript_info,
+                transcript_info = None
+                if transcript_file:
+                    transcript_info = FileInfoResponse(
+                        url=f"/api/v1/files/{transcript_file.id}",
+                        size=transcript_file.size,
+                        format=transcript_file.format,
+                        language=transcript_file.metadata.get("language")
+                        if transcript_file.metadata
+                        else None,
                     )
+
+                response.files = FilesResponse(
+                    audio=audio_info,
+                    transcript=transcript_info,
+                )
 
         # Add error info for failed tasks
         elif task.status == TaskStatus.FAILED:

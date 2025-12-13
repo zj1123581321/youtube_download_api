@@ -86,10 +86,31 @@ curl -X POST http://localhost:8000/api/v1/tasks \
   -H "X-API-Key: your-api-key" \
   -d '{
     "video_url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+    "include_audio": true,
+    "include_transcript": true,
     "callback_url": "https://your-server.com/webhook",
     "callback_secret": "your-hmac-secret"
   }'
 ```
+
+**请求参数**
+
+| 参数 | 类型 | 必填 | 默认值 | 说明 |
+|------|------|------|--------|------|
+| `video_url` | string | 是 | - | YouTube 视频 URL |
+| `include_audio` | boolean | 否 | true | 是否下载音频 |
+| `include_transcript` | boolean | 否 | true | 是否获取字幕 |
+| `callback_url` | string | 否 | - | Webhook 回调 URL |
+| `callback_secret` | string | 否 | - | HMAC 签名密钥（8-256字符） |
+
+**下载模式说明**
+
+| include_audio | include_transcript | 行为 |
+|---------------|-------------------|------|
+| `true` | `true` | 下载音频 + 获取字幕（默认） |
+| `true` | `false` | 仅下载音频 |
+| `false` | `true` | 仅获取字幕，若无字幕则自动下载音频 |
+| `false` | `false` | 无效请求，返回错误 |
 
 **响应**
 ```json
@@ -97,6 +118,10 @@ curl -X POST http://localhost:8000/api/v1/tasks \
   "task_id": "550e8400-e29b-41d4-a716-446655440000",
   "status": "pending",
   "video_id": "dQw4w9WgXcQ",
+  "request": {
+    "include_audio": true,
+    "include_transcript": true
+  },
   "position": 3,
   "estimated_wait": 180,
   "created_at": "2025-12-12T10:00:00+08:00"
@@ -111,12 +136,20 @@ curl http://localhost:8000/api/v1/tasks/{task_id} \
   -H "X-API-Key: your-api-key"
 ```
 
-**响应 - 已完成**
+**响应 - 已完成（音频+字幕模式）**
 ```json
 {
   "task_id": "550e8400-e29b-41d4-a716-446655440000",
   "status": "completed",
   "video_id": "dQw4w9WgXcQ",
+  "request": {
+    "include_audio": true,
+    "include_transcript": true
+  },
+  "result": {
+    "has_transcript": true,
+    "audio_fallback": false
+  },
   "video_info": {
     "title": "Rick Astley - Never Gonna Give You Up",
     "author": "Rick Astley",
@@ -130,10 +163,73 @@ curl http://localhost:8000/api/v1/tasks/{task_id} \
       "bitrate": 128
     },
     "transcript": {
-      "url": "/api/v1/files/abc123.json",
+      "url": "/api/v1/files/abc123.srt",
       "size": 12345,
       "language": "en"
     }
+  },
+  "expires_at": "2025-02-10T10:00:00+08:00"
+}
+```
+
+**响应 - 已完成（仅字幕模式，视频有字幕）**
+```json
+{
+  "task_id": "550e8400-e29b-41d4-a716-446655440000",
+  "status": "completed",
+  "video_id": "dQw4w9WgXcQ",
+  "request": {
+    "include_audio": false,
+    "include_transcript": true
+  },
+  "result": {
+    "has_transcript": true,
+    "audio_fallback": false
+  },
+  "video_info": {
+    "title": "Rick Astley - Never Gonna Give You Up",
+    "author": "Rick Astley",
+    "duration": 213
+  },
+  "files": {
+    "audio": null,
+    "transcript": {
+      "url": "/api/v1/files/abc123.srt",
+      "size": 12345,
+      "language": "en"
+    }
+  },
+  "expires_at": "2025-02-10T10:00:00+08:00"
+}
+```
+
+**响应 - 已完成（仅字幕模式，视频无字幕，自动下载音频）**
+```json
+{
+  "task_id": "550e8400-e29b-41d4-a716-446655440000",
+  "status": "completed",
+  "video_id": "dQw4w9WgXcQ",
+  "request": {
+    "include_audio": false,
+    "include_transcript": true
+  },
+  "result": {
+    "has_transcript": false,
+    "audio_fallback": true
+  },
+  "video_info": {
+    "title": "Rick Astley - Never Gonna Give You Up",
+    "author": "Rick Astley",
+    "duration": 213
+  },
+  "files": {
+    "audio": {
+      "url": "/api/v1/files/abc123.m4a",
+      "size": 3456789,
+      "format": "m4a",
+      "bitrate": 128
+    },
+    "transcript": null
   },
   "expires_at": "2025-02-10T10:00:00+08:00"
 }

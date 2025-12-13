@@ -125,6 +125,14 @@ class Task:
     video_url: str  # Original URL
     status: TaskStatus = TaskStatus.PENDING
 
+    # Request mode configuration
+    include_audio: bool = True  # Whether to download audio
+    include_transcript: bool = True  # Whether to fetch transcript
+
+    # Result info (populated after execution)
+    has_transcript: Optional[bool] = None  # Whether video has available transcript
+    audio_fallback: bool = False  # Whether audio was downloaded as fallback
+
     # Video info (populated after download)
     video_info: Optional[VideoInfo] = None
 

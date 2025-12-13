@@ -42,8 +42,8 @@ def test_settings(temp_dir: Path) -> Settings:
         pot_server_url="http://localhost:4416",
         data_dir=temp_dir,
         file_retention_days=1,
-        task_interval_min=1,
-        task_interval_max=2,
+        task_interval_min=5,
+        task_interval_max=10,
         dry_run=True,
     )
 
@@ -61,7 +61,7 @@ async def test_db(temp_dir: Path) -> AsyncGenerator[Database, None]:
 @pytest.fixture
 def mock_downloader() -> AsyncMock:
     """Mock yt-dlp downloader."""
-    from src.core.downloader import DownloadResult
+    from src.core.downloader import DownloadResult, TranscriptOnlyResult
 
     downloader = AsyncMock()
     downloader.download.return_value = DownloadResult(
@@ -72,7 +72,49 @@ def mock_downloader() -> AsyncMock:
             channel_id="UC123456",
         ),
         audio_path=Path("/tmp/test.m4a"),
-        transcript_path=Path("/tmp/test.en.json3"),
+        transcript_path=Path("/tmp/test.en.srt"),
+    )
+    # 默认模拟有字幕的情况
+    downloader.extract_transcript_only.return_value = TranscriptOnlyResult(
+        video_info=VideoInfo(
+            title="Test Video",
+            author="Test Author",
+            duration=60,
+            channel_id="UC123456",
+        ),
+        has_transcript=True,
+        transcript_path=Path("/tmp/test.en.srt"),
+    )
+    return downloader
+
+
+@pytest.fixture
+def mock_downloader_no_transcript() -> AsyncMock:
+    """Mock downloader for videos without transcript."""
+    from src.core.downloader import DownloadResult, TranscriptOnlyResult
+
+    downloader = AsyncMock()
+    # 下载时没有字幕
+    downloader.download.return_value = DownloadResult(
+        video_info=VideoInfo(
+            title="Test Video No Subs",
+            author="Test Author",
+            duration=60,
+            channel_id="UC123456",
+        ),
+        audio_path=Path("/tmp/test.m4a"),
+        transcript_path=None,
+    )
+    # 提取字幕时发现没有字幕
+    downloader.extract_transcript_only.return_value = TranscriptOnlyResult(
+        video_info=VideoInfo(
+            title="Test Video No Subs",
+            author="Test Author",
+            duration=60,
+            channel_id="UC123456",
+        ),
+        has_transcript=False,
+        transcript_path=None,
     )
     return downloader
 

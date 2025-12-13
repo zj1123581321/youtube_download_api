@@ -34,6 +34,14 @@ class CreateTaskRequest(BaseModel):
         min_length=8,
         max_length=256,
     )
+    include_audio: bool = Field(
+        default=True,
+        description="Whether to download audio file",
+    )
+    include_transcript: bool = Field(
+        default=True,
+        description="Whether to fetch transcript/subtitles",
+    )
 
     @field_validator("video_url")
     @classmethod
@@ -43,6 +51,13 @@ class CreateTaskRequest(BaseModel):
         if not video_id:
             raise ValueError("Invalid YouTube video URL")
         return v
+
+    def model_post_init(self, __context: Any) -> None:
+        """Validate that at least one of include_audio or include_transcript is True."""
+        if not self.include_audio and not self.include_transcript:
+            raise ValueError(
+                "At least one of include_audio or include_transcript must be True"
+            )
 
 
 # ==================== Response Schemas ====================
@@ -76,8 +91,27 @@ class FileInfoResponse(BaseModel):
 class FilesResponse(BaseModel):
     """Files information in response."""
 
-    audio: FileInfoResponse
+    audio: Optional[FileInfoResponse] = None
     transcript: Optional[FileInfoResponse] = None
+
+
+class RequestModeResponse(BaseModel):
+    """Request mode information in response."""
+
+    include_audio: bool = True
+    include_transcript: bool = True
+
+
+class ResultInfoResponse(BaseModel):
+    """Result information showing actual execution details."""
+
+    has_transcript: bool = Field(
+        ..., description="Whether the video has available transcript"
+    )
+    audio_fallback: bool = Field(
+        default=False,
+        description="Whether audio was downloaded as fallback (transcript_only mode but no transcript available)",
+    )
 
 
 class ErrorInfoResponse(BaseModel):
@@ -98,6 +132,12 @@ class TaskResponse(BaseModel):
     video_info: Optional[VideoInfoResponse] = None
     files: Optional[FilesResponse] = None
     error: Optional[ErrorInfoResponse] = None
+
+    # Request mode (what was requested)
+    request: Optional[RequestModeResponse] = None
+
+    # Result info (what actually happened, for completed tasks)
+    result: Optional[ResultInfoResponse] = None
 
     # Queue information (for pending tasks)
     position: Optional[int] = Field(None, description="Position in queue")
