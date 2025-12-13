@@ -331,19 +331,26 @@ class DownloadWorker:
                 reused_audio = False
 
             # Process transcript file
+            # 优化：无论用户是否请求字幕，只要 downloader 返回了字幕就保存
+            # 这样可以避免后续请求字幕时重复获取
             transcript_file_id = existing_transcript.id if existing_transcript else None
             reused_transcript = existing_transcript is not None
 
-            if need_transcript and result.transcript_path and result.transcript_path.exists():
-                lang = self._extract_language(result.transcript_path)
-                transcript_file = await self.file_service.create_file_record(
-                    video_id=task.video_id,
-                    file_type=FileType.TRANSCRIPT,
-                    source_path=result.transcript_path,
-                    language=lang,
-                )
-                transcript_file_id = transcript_file.id
-                reused_transcript = False
+            if result.transcript_path and result.transcript_path.exists():
+                if existing_transcript is None:
+                    # 没有缓存，保存新字幕
+                    lang = self._extract_language(result.transcript_path)
+                    transcript_file = await self.file_service.create_file_record(
+                        video_id=task.video_id,
+                        file_type=FileType.TRANSCRIPT,
+                        source_path=result.transcript_path,
+                        language=lang,
+                    )
+                    transcript_file_id = transcript_file.id
+                    reused_transcript = False
+                    logger.info(
+                        f"Task {task.id}: Saved transcript (requested={need_transcript})"
+                    )
 
             return {
                 "audio_file_id": audio_file_id,
