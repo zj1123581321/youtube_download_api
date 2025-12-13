@@ -31,12 +31,18 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# Install only runtime dependencies (curl for healthcheck)
+# Install runtime dependencies (curl for healthcheck, unzip for deno)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     ca-certificates \
+    unzip \
     && rm -rf /var/lib/apt/lists/* \
     && rm -rf /root/.cache
+
+# Install Deno for yt-dlp n challenge solving (nsig decryption)
+# https://github.com/yt-dlp/yt-dlp/wiki/EJS
+RUN curl -fsSL https://deno.land/install.sh | DENO_INSTALL=/usr/local sh \
+    && deno --version
 
 # Copy ffmpeg binaries from downloader stage
 COPY --from=ffmpeg-downloader /usr/local/bin/ffmpeg /usr/local/bin/

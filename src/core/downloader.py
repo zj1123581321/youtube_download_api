@@ -203,15 +203,23 @@ class YouTubeDownloader:
         # - 值: 嵌套字典 {参数名: [参数值列表]}
         #
         # 参考: bgutil-ytdlp-pot-provider README
-        youtube_args = {"player_client": ["web"]}
-
-        # 无 Cookies 时，强制请求 PO Token
-        if not self.settings.cookie_file:
-            youtube_args["webpage_skip"] = ["player_response"]
+        #
+        # 2024.12 更新：YouTube web 客户端已强制使用 SABR 协议，
+        # 导致常规 HTTP 格式不可用 (yt-dlp#12482)。
+        #
+        # 客户端选择策略：
+        # - 有 Cookies: web_creator 优先（支持 cookies + PO Token，成功率高）
+        # - 无 Cookies: ios 优先（不需要认证，速度快）
+        if self.settings.cookie_file:
+            # 有 cookies 时，使用支持 cookies 的客户端
+            youtube_args = {"player_client": ["web_creator"]}
+        else:
+            # 无 cookies 时，ios 不需要认证，更快；web_creator 作为备选
+            youtube_args = {"player_client": ["ios", "web_creator"]}
 
         opts["extractor_args"] = {
             "youtube": youtube_args,
-            # bgutil:http provider 配置
+            # bgutil:http provider 配置（web_creator 客户端需要 PO Token）
             "youtubepot-bgutilhttp": {
                 "base_url": [self.settings.pot_server_url],
             },
