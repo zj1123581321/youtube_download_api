@@ -6,32 +6,25 @@ services:
     container_name: youtube-api
     restart: unless-stopped
     ports:
-      - "${PORT:-8000}:${PORT:-8000}"
+      - "${HOST_PORT:-8000}:8000"
     volumes:
       - ./data:/app/data
     environment:
       - TZ=Asia/Shanghai
-      - PORT=${PORT:-8000}
     env_file:
-      - .env.production
+      - .env
     depends_on:
       - pot-provider
     healthcheck:
-      test: [ "CMD", "sh", "-c", "curl -f http://localhost:$${PORT:-8000}/health" ]
+      test: [ "CMD", "curl", "-f", "http://localhost:8000/health" ]
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 10s
-    networks:
-      - youtube-api-network
 
   pot-provider:
     image: brainicism/bgutil-ytdlp-pot-provider
     container_name: pot-provider
     restart: unless-stopped
-    networks:
-      - youtube-api-network
-
-networks:
-  youtube-api-network:
-    driver: bridge
+    ports:
+      - "${POT_PORT:-4416}:4416"

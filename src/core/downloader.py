@@ -198,21 +198,23 @@ class YouTubeDownloader:
 
         # PO Token Provider 配置
         #
-        # 工程最佳实践：
-        # - 有 Cookies 时：YouTube 验证宽松，PO Token 作为备用
-        # - 无 Cookies 时：必须用 webpage_skip=player_response 强制请求 PO Token
+        # yt-dlp extractor_args Python API 格式（与 CLI 解析结果一致）：
+        # - 键: extractor 名称（如 "youtube", "youtubepot-bgutilhttp"）
+        # - 值: 嵌套字典 {参数名: [参数值列表]}
         #
-        # player_client=web: 使用 web 客户端（支持 PO Token，recommended=True）
-        youtube_args = ["player_client=web"]
+        # 参考: bgutil-ytdlp-pot-provider README
+        youtube_args = {"player_client": ["web"]}
 
-        # 无 Cookies 时，必须强制请求 PO Token
+        # 无 Cookies 时，强制请求 PO Token
         if not self.settings.cookie_file:
-            youtube_args.append("webpage_skip=player_response")
+            youtube_args["webpage_skip"] = ["player_response"]
 
         opts["extractor_args"] = {
             "youtube": youtube_args,
-            # PO Token provider 配置：使用 youtube:pot:bgutil:http 格式
-            "youtube:pot:bgutil:http": [f"base_url={self.settings.pot_server_url}"],
+            # bgutil:http provider 配置
+            "youtubepot-bgutilhttp": {
+                "base_url": [self.settings.pot_server_url],
+            },
         }
 
         # 启用远程组件下载，用于解决 n challenge
