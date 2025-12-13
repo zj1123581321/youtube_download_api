@@ -83,9 +83,36 @@ class TaskService:
         existing_audio = existing_files.get("audio")
         existing_transcript = existing_files.get("transcript")
 
+        # Check if video is known to have no native transcript
+        video_resource = await self.db.get_video_resource(video_id)
+        video_has_no_transcript = (
+            video_resource is not None
+            and video_resource.has_native_transcript is False
+        )
+
         # Determine what we need
         need_audio = request.include_audio and existing_audio is None
         need_transcript = request.include_transcript and existing_transcript is None
+
+        # Special case: user requests transcript, but video is known to have none
+        # If audio exists, return it as fallback (no need to create new task)
+        if (
+            need_transcript
+            and video_has_no_transcript
+            and existing_audio is not None
+        ):
+            logger.info(
+                f"Cache hit for video {video_id}: no native transcript, "
+                f"returning existing audio as fallback"
+            )
+            return await self._build_cached_response(
+                video_id=video_id,
+                video_url=request.video_url,
+                request=request,
+                audio_file=existing_audio,
+                transcript_file=None,
+                audio_fallback=True,
+            )
 
         # If all requested resources exist, return immediately (cache hit)
         if not need_audio and not need_transcript:
@@ -149,6 +176,7 @@ class TaskService:
         request: CreateTaskRequest,
         audio_file,
         transcript_file,
+        audio_fallback: bool = False,
     ) -> TaskResponse:
         """
         Build response for cache hit (all resources exist).
@@ -159,6 +187,7 @@ class TaskService:
             request: Original request.
             audio_file: Existing audio FileRecord (or None).
             transcript_file: Existing transcript FileRecord (or None).
+            audio_fallback: Whether audio is returned as fallback for missing transcript.
 
         Returns:
             TaskResponse with cached resources.
@@ -182,8 +211,8 @@ class TaskService:
             ),
             result=ResultInfoResponse(
                 has_transcript=transcript_file is not None,
-                audio_fallback=False,
-                reused_audio=audio_file is not None if request.include_audio else False,
+                audio_fallback=audio_fallback,
+                reused_audio=audio_file is not None if request.include_audio or audio_fallback else False,
                 reused_transcript=transcript_file is not None if request.include_transcript else False,
             ),
         )
@@ -204,7 +233,8 @@ class TaskService:
 
         # Build files response
         audio_info = None
-        if audio_file and request.include_audio:
+        # Include audio if requested OR if it's a fallback for missing transcript
+        if audio_file and (request.include_audio or audio_fallback):
             audio_info = FileInfoResponse(
                 url=f"/api/v1/files/{audio_file.id}",
                 size=audio_file.size,
