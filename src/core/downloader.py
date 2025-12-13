@@ -211,7 +211,8 @@ class YouTubeDownloader:
 
         opts["extractor_args"] = {
             "youtube": youtube_args,
-            "youtubepot-bgutilhttp": [f"base_url={self.settings.pot_server_url}"],
+            # PO Token provider 配置：使用 youtube:pot:bgutil:http 格式
+            "youtube:pot:bgutil:http": [f"base_url={self.settings.pot_server_url}"],
         }
 
         # 启用远程组件下载，用于解决 n challenge

@@ -6,17 +6,18 @@ services:
     container_name: youtube-api
     restart: unless-stopped
     ports:
-      - "${PORT:-8000}:8000"
+      - "${PORT:-8000}:${PORT:-8000}"
     volumes:
       - ./data:/app/data
     environment:
       - TZ=Asia/Shanghai
+      - PORT=${PORT:-8000}
     env_file:
       - .env.production
     depends_on:
       - pot-provider
     healthcheck:
-      test: [ "CMD", "curl", "-f", "http://localhost:8000/health" ]
+      test: [ "CMD", "sh", "-c", "curl -f http://localhost:$${PORT:-8000}/health" ]
       interval: 30s
       timeout: 10s
       retries: 3
