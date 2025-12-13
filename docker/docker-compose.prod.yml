@@ -1,0 +1,36 @@
+version: "3.8"
+
+services:
+  youtube-api:
+    image: youtube-api:latest
+    container_name: youtube-api
+    restart: unless-stopped
+    ports:
+      - "${PORT:-8000}:8000"
+    volumes:
+      - ./data:/app/data
+    environment:
+      - TZ=Asia/Shanghai
+    env_file:
+      - .env.production
+    depends_on:
+      - pot-provider
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:8000/health" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    networks:
+      - youtube-api-network
+
+  pot-provider:
+    image: brainicism/bgutil-ytdlp-pot-provider
+    container_name: pot-provider
+    restart: unless-stopped
+    networks:
+      - youtube-api-network
+
+networks:
+  youtube-api-network:
+    driver: bridge

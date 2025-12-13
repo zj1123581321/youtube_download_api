@@ -1,22 +1,62 @@
+# Stage 1: Download ffmpeg static binary
+FROM alpine:3.19 AS ffmpeg-downloader
+
+RUN apk add --no-cache curl tar xz
+
+# Download ffmpeg static build from BtbN
+# https://github.com/BtbN/FFmpeg-Builds
+RUN curl -L "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz" \
+    -o /tmp/ffmpeg.tar.xz && \
+    mkdir -p /tmp/ffmpeg && \
+    tar -xf /tmp/ffmpeg.tar.xz -C /tmp/ffmpeg --strip-components=1 && \
+    cp /tmp/ffmpeg/bin/ffmpeg /tmp/ffmpeg/bin/ffprobe /usr/local/bin/
+
+# Stage 2: Build Python dependencies
+FROM python:3.11-slim AS builder
+
+WORKDIR /app
+
+# Install build dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc \
+    libffi-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Python dependencies
+COPY requirements-prod.txt .
+RUN pip install --no-cache-dir --target=/app/deps -r requirements-prod.txt
+
+# Stage 3: Final runtime image
 FROM python:3.11-slim
 
 WORKDIR /app
 
-# Install system dependencies
+# Install only runtime dependencies (curl for healthcheck)
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ffmpeg \
     curl \
-    && rm -rf /var/lib/apt/lists/*
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/* \
+    && rm -rf /root/.cache
 
-# Install Python dependencies
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# Copy ffmpeg binaries from downloader stage
+COPY --from=ffmpeg-downloader /usr/local/bin/ffmpeg /usr/local/bin/
+COPY --from=ffmpeg-downloader /usr/local/bin/ffprobe /usr/local/bin/
+
+# Copy Python dependencies from builder stage
+COPY --from=builder /app/deps /usr/local/lib/python3.11/site-packages/
 
 # Copy source code
 COPY src/ ./src/
 
 # Create data directories
 RUN mkdir -p /app/data/files/audio /app/data/files/transcript /app/data/logs
+
+# Remove unnecessary files to reduce size
+RUN find /usr/local/lib/python3.11/site-packages -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true && \
+    find /usr/local/lib/python3.11/site-packages -type d -name "tests" -exec rm -rf {} + 2>/dev/null || true && \
+    find /usr/local/lib/python3.11/site-packages -type d -name "test" -exec rm -rf {} + 2>/dev/null || true && \
+    rm -rf /usr/local/lib/python3.11/site-packages/pip* && \
+    rm -rf /usr/local/lib/python3.11/site-packages/setuptools*
 
 # Set environment variables
 ENV PYTHONUNBUFFERED=1
@@ -31,4 +71,4 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
     CMD curl -f http://localhost:8000/health || exit 1
 
 # Run the application
-CMD ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["python", "-m", "uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8000"]

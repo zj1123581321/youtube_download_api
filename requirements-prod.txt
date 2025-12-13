@@ -1,0 +1,29 @@
+# Web Framework
+fastapi>=0.104.0
+uvicorn[standard]>=0.24.0
+
+# Download Core
+yt-dlp>=2025.05.22
+curl_cffi>=0.6.0
+bgutil-ytdlp-pot-provider
+
+# Database
+aiosqlite>=0.19.0
+
+# Configuration
+pydantic-settings>=2.0.0
+
+# Scheduler
+apscheduler>=3.10.0
+
+# Notification
+wecom-notifier>=0.2.0
+
+# Logging
+loguru>=0.7.0
+
+# HTTP Client
+httpx>=0.25.0
+
+# Utilities
+python-multipart>=0.0.6
