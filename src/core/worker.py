@@ -250,13 +250,27 @@ class DownloadWorker:
                     "reused_transcript": False,
                 }
             else:
-                # No transcript, fallback to audio download
-                logger.info(f"Task {task.id}: No transcript, falling back to audio")
-                return await self._execute_download(
-                    task, existing_audio, existing_transcript,
-                    need_audio=True, need_transcript=False,
-                    audio_fallback=True,
-                )
+                # No transcript available
+                if existing_audio:
+                    # Audio already exists, just return it (no download needed)
+                    logger.info(
+                        f"Task {task.id}: No transcript, but audio already exists, "
+                        f"reusing {existing_audio.id}"
+                    )
+                    return {
+                        "audio_file_id": existing_audio.id,
+                        "transcript_file_id": None,
+                        "reused_audio": True,
+                        "reused_transcript": False,
+                    }
+                else:
+                    # No audio exists, fallback to audio download
+                    logger.info(f"Task {task.id}: No transcript, falling back to audio download")
+                    return await self._execute_download(
+                        task, existing_audio, existing_transcript,
+                        need_audio=True, need_transcript=False,
+                        audio_fallback=True,
+                    )
 
     async def _execute_download(
         self,
