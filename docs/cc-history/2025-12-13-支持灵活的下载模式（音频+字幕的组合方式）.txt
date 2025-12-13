@@ -1,0 +1,1780 @@
+
+ * ▐▛███▜▌ *   Claude Code v2.0.67
+* ▝▜█████▛▘ *  Opus 4.5 · Claude Max
+ *  ▘▘ ▝▝  *   D:\MyFolders\Developments\0Python\251212_youtube_download_api
+
+> /clear 
+  ⎿  (no content)
+
+> @README.md 
+当前整个项目在服务端和客户端进行交互时，客户端发送一个请求，就会自动触发完整
+的音频下载和字幕获取全流程。
+
+但有的时候，客户端只是想要获取这个视频的字幕，只有当原视频不包含字幕时，才需
+要下载音频进行语音转文字。
+
+所以我想要在客户端和服务端的交互中增加一个参数，来控制本次请求是只为了获取字
+幕，还是需要下载音频。这里有一个考虑点，就是如果同时配置了字幕和音频获取，就
+按流程正常操作。但如果客户端请求仅获取字幕，且视频已有字幕，则无需额外处理。
+但如果原视频没有字幕，此时应趁此次请求的机会尝试下载音频，避免二次重发请求。
+
+所以请你阅读当前的项目代码，设计一个交互方案。如有不明确之处可向我提问，但先
+不要更改任何具体代码。 
+  ⎿  Read README.md (397 lines)
+
+● 我来先阅读项目代码，了解当前的实现逻辑，然后设计交互方案。
+  ⎿  Initializing…
+  ⎿  Invalid tool parameters
+
+● Explore(探索项目代码结构) Sonnet 4.5
+  ⎿  Done (19 tool uses · 57.2k tokens · 2m 14s)                           
+
+● 我已经了解了项目的整体架构。在设计交互方案之前，我需要确认一个关键问题：
+
+  关于语音转文字 (ASR) 功能
+
+  从代码来看，当前的字幕获取逻辑是：
+  1. 从 yt-dlp 的 info 中提取 YouTube 原生字幕 URL
+  2. 通过 TikHub API 获取并格式化字幕
+
+  这意味着如果 YouTube 视频本身没有字幕（无论是手动上传还是自动生成），当前系统无法生成字幕。
+
+  你提到"如果原视频没有字幕，此时应趁此次请求的机会尝试下载音频"——请问：
+
+  1. 当前是否已有语音转文字（ASR）的能力？ 还是这是一个计划实现的功能？
+  2. 如果需要 ASR，你有偏好的服务吗？（如 OpenAI Whisper、Google Speech-to-Text、阿里云语音识别等）
+
+  ---
+  在等待你的回复之前，我先给出基于当前理解的交互方案设计：
+
+  交互方案设计
+
+  1. API 请求参数扩展
+
+  在 CreateTaskRequest 中新增参数：
+
+  class CreateTaskRequest(BaseModel):
+      video_url: str
+      callback_url: Optional[HttpUrl] = None
+      callback_secret: Optional[str] = None
+
+      # 新增参数
+      download_mode: Literal["full", "transcript_only"] = "full"
+      # - full: 下载音频 + 获取字幕（当前默认行为）
+      # - transcript_only: 仅获取字幕，若无字幕则自动降级下载音频
+
+  2. 处理逻辑
+
+  | download_mode   | 视频有字幕             | 视频无字幕                          |
+  |-----------------|------------------------|-------------------------------------|
+  | full            | 下载音频 + 获取字幕    | 下载音频 + ASR 生成字幕（若有 ASR） |
+  | transcript_only | 仅获取字幕，不下载音频 | 自动降级为 full 模式                |
+
+  3. 执行流程
+
+  客户端请求 (transcript_only)
+           │
+           ▼
+  ┌─────────────────────┐
+  │ 提取视频信息         │  ← 轻量请求，不下载
+  │ (extract_info)      │
+  └─────────────────────┘
+           │
+           ▼
+      有字幕 URL？
+      /          \
+     是            否
+     │              │
+     ▼              ▼
+  ┌──────────┐  ┌─────────────────┐
+  │ 获取字幕  │  │ 降级为 full 模式 │
+  │ (TikHub) │  │ 下载音频 + ASR   │
+  └──────────┘  └─────────────────┘
+
+  4. 响应扩展
+
+  在任务响应中增加字段，告知客户端实际执行的模式：
+
+  {
+    "task_id": "...",
+    "status": "completed",
+    "download_mode": "transcript_only",
+    "actual_mode": "full",  // 实际执行模式（如因无字幕而降级）
+    "fallback_reason": "no_subtitle_available",  // 降级原因（如有）
+    ...
+  }
+
+  ---
+  请确认：
+  1. 上述方案是否符合你的预期？
+  2. ASR 功能的状态如何？
+
+> No no no. 服务端只涉及字幕下载和音频下载，至于转录成文字是客户端的事情。我
+刚才提到的情况是，当客户端请求获取字幕而原视频不带字幕时，应该趁此机会下载音
+频，这样方便客户端直接调用已下载的音频，进行后续的 ASR 转文字服务。 
+
+● 明白了！让我重新理解你的需求：
+
+  需求澄清
+
+  服务端职责边界清晰：
+  - 音频下载 - 服务端负责
+  - 字幕获取 - 服务端负责（从 YouTube 获取原生字幕）
+  - ASR 转录 - 客户端负责（不在本服务范围内）
+
+  你想要的逻辑：
+
+  | 客户端请求 | 视频有字幕              | 视频无字幕                         |
+  |------------|-------------------------|------------------------------------|
+  | 仅字幕     | ✅ 返回字幕，不下载音频 | ⚠️ 自动下载音频（供客户端 ASR 用） |
+  | 仅音频     | ✅ 只下载音频           | ✅ 只下载音频                      |
+  | 音频+字幕  | ✅ 当前默认行为         | ✅ 当前默认行为                    |
+
+  ---
+  修订后的交互方案
+
+  1. API 请求参数
+
+  class CreateTaskRequest(BaseModel):
+      video_url: str
+      callback_url: Optional[HttpUrl] = None
+      callback_secret: Optional[str] = None
+
+      # 新增参数
+      include_audio: bool = True       # 是否需要音频
+      include_transcript: bool = True  # 是否需要字幕
+
+  2. 处理逻辑矩阵
+
+  | include_audio | include_transcript | 实际行为                                    |
+  |---------------|--------------------|---------------------------------------------|
+  | True          | True               | 下载音频 + 获取字幕（当前默认）             |
+  | True          | False              | 仅下载音频                                  |
+  | False         | True               | 先检查字幕 → 有则只取字幕；无则自动下载音频 |
+  | False         | False              | 拒绝请求（无意义）                          |
+
+  3. 响应扩展
+
+  {
+    "task_id": "...",
+    "status": "completed",
+    "request": {
+      "include_audio": false,
+      "include_transcript": true
+    },
+    "result": {
+      "has_transcript": false,
+      "audio_fallback": true  // 因无字幕而自动下载了音频
+    },
+    "files": {
+      "audio": { ... },      // 因 fallback 而存在
+      "transcript": null     // 原视频无字幕
+    }
+  }
+
+  ---
+  这个方案是否符合你的预期？还有其他需要考虑的场景吗？
+
+> 请开始实现整个方案,并更新 README 的文档 
+
+● 好的，我来实现这个方案。首先让我详细阅读需要修改的核心文件。
+
+● Read(src\api\schemas.py)
+  ⎿  Read 211 lines
+
+● Read(src\db\models.py)
+  ⎿  Read 201 lines
+
+● Read(src\core\downloader.py)
+  ⎿  Read 601 lines
+
+● Read(src\core\worker.py)
+  ⎿  Read 276 lines
+
+● Read(src\services\task_service.py)
+  ⎿  Read 319 lines
+
+● Read(src\services\tikhub_service.py)
+  ⎿  Read 281 lines
+
+● Read(src\db\database.py)
+  ⎿  Read 732 lines
+
+● 现在我已经充分理解了代码结构。让我创建任务列表并开始实现。
+
+● Update(src\api\schemas.py)
+  ⎿  Updated src\api\schemas.py with 15 additions                        
+       34            min_length=8,
+       35            max_length=256,
+       36        )
+       37 +      include_audio: bool = Field(
+       38 +          default=True,
+       39 +          description="Whether to download audio file",
+       40 +      )
+       41 +      include_transcript: bool = Field(
+       42 +          default=True,
+       43 +          description="Whether to fetch transcript/subtitles",
+       44 +      )
+       45    
+       46        @field_validator("video_url")
+       47        @classmethod
+     ...
+       44                raise ValueError("Invalid YouTube video URL")
+       45            return v
+       46    
+       47 +      def model_post_init(self, __context: Any) -> None:
+       48 +          """Validate that at least one of include_audio or 
+          + include_transcript is True."""
+       49 +          if not self.include_audio and not 
+          + self.include_transcript:
+       50 +              raise ValueError(
+       51 +                  "At least one of include_audio or 
+          + include_transcript must be True"
+       52 +              )
+       53    
+       54 +  
+       55    # ==================== Response Schemas ====================
+       56    
+       57    
+
+● 现在更新响应模型，audio 变为可选，添加请求模式和结果信息：
+
+● Update(src\api\schemas.py)
+  ⎿  Updated src\api\schemas.py with 20 additions and 1 removal         
+        91    class FilesResponse(BaseModel):
+        92        """Files information in response."""
+        93    
+        94 -      audio: FileInfoResponse
+        94 +      audio: Optional[FileInfoResponse] = None
+        95        transcript: Optional[FileInfoResponse] = None
+        96    
+        97    
+        98 +  class RequestModeResponse(BaseModel):
+        99 +      """Request mode information in response."""
+       100 +  
+       101 +      include_audio: bool = True
+       102 +      include_transcript: bool = True
+       103 +  
+       104 +  
+       105 +  class ResultInfoResponse(BaseModel):
+       106 +      """Result information showing actual execution 
+           + details."""
+       107 +  
+       108 +      has_transcript: bool = Field(
+       109 +          ..., description="Whether the video has available 
+           + transcript"
+       110 +      )
+       111 +      audio_fallback: bool = Field(
+       112 +          default=False,
+       113 +          description="Whether audio was downloaded as 
+           + fallback (transcript_only mode but no transcript 
+           + available)",
+       114 +      )
+       115 +  
+       116 +  
+       117    class ErrorInfoResponse(BaseModel):
+       118        """Error information in response."""
+       119    
+
+● Read(src\api\schemas.py)
+  ⎿  Read 80 lines
+
+● Update(src\api\schemas.py)
+  ⎿  Updated src\api\schemas.py with 6 additions                       
+       133        files: Optional[FilesResponse] = None
+       134        error: Optional[ErrorInfoResponse] = None
+       135    
+       136 +      # Request mode (what was requested)
+       137 +      request: Optional[RequestModeResponse] = None
+       138 +  
+       139 +      # Result info (what actually happened, for completed 
+           + tasks)
+       140 +      result: Optional[ResultInfoResponse] = None
+       141 +  
+       142        # Queue information (for pending tasks)
+       143        position: Optional[int] = Field(None, 
+             description="Position in queue")
+       144        estimated_wait: Optional[int] = Field(
+
+● Update(src\db\models.py)
+  ⎿  Updated src\db\models.py with 8 additions                           
+       125        video_url: str  # Original URL
+       126        status: TaskStatus = TaskStatus.PENDING
+       127    
+       128 +      # Request mode configuration
+       129 +      include_audio: bool = True  # Whether to download audio
+       130 +      include_transcript: bool = True  # Whether to fetch 
+           + transcript
+       131 +  
+       132 +      # Result info (populated after execution)
+       133 +      has_transcript: Optional[bool] = None  # Whether video 
+           + has available transcript
+       134 +      audio_fallback: bool = False  # Whether audio was 
+           + downloaded as fallback
+       135 +  
+       136        # Video info (populated after download)
+       137        video_info: Optional[VideoInfo] = None
+       138    
+
+● Update(src\db\database.py)
+  ⎿  Updated src\db\database.py with 4 additions                         
+       102                        video_id TEXT NOT NULL,
+       103                        video_url TEXT NOT NULL,
+       104                        status TEXT NOT NULL DEFAULT 'pending',
+       105 +                      include_audio INTEGER DEFAULT 1,
+       106 +                      include_transcript INTEGER DEFAULT 1,
+       107 +                      has_transcript INTEGER,
+       108 +                      audio_fallback INTEGER DEFAULT 0,
+       109                        video_info TEXT,
+       110                        audio_file_id TEXT,
+       111                        transcript_file_id TEXT,
+
+● Update(src\db\database.py)
+  ⎿  Updated src\db\database.py with 6 additions and 3 removals       
+       181                await self.execute(
+       182                    """
+       183                    INSERT INTO tasks (
+       184 -                      id, video_id, video_url, status,
+           -   video_info,
+       185 -                      callback_url, callback_secret, 
+           - callback_status,
+       184 +                      id, video_id, video_url, status,
+       185 +                      include_audio, include_transcript,
+       186 +                      video_info, callback_url, 
+           + callback_secret, callback_status,
+       187                        created_at, expires_at
+       188 -                  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       188 +                  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+           +  , ?, ?)
+       189                    """,
+       190                    (
+       191                        task.id,
+       192                        task.video_id,
+       193                        task.video_url,
+       194                        task.status.value,
+       195 +                      1 if task.include_audio else 0,
+       196 +                      1 if task.include_transcript else 0,
+       197                        video_info_json,
+       198                        task.callback_url,
+       199                        task.callback_secret,
+
+● Update(src\db\database.py)
+  ⎿  Updated src\db\database.py with 10 additions and 3 removals         
+       381            self,
+       382            task_id: str,
+       383            video_info: VideoInfo,
+       384 -          audio_file_id: str,
+       384 +          audio_file_id: Optional[str],
+       385            transcript_file_id: Optional[str],
+       386            expires_at: datetime,
+       387 +          has_transcript: bool = True,
+       388 +          audio_fallback: bool = False,
+       389        ) -> None:
+       390            """
+       391            Update task as completed with file information.
+     ...
+       391            Args:
+       392                task_id: Task UUID.
+       393                video_info: Video information.
+       394 -              audio_file_id: Audio file UUID.
+       394 +              audio_file_id: Audio file UUID
+           +   (may be None for transcript_only mode).
+       395                transcript_file_id: Transcript file UUID (may 
+             be None).
+       396                expires_at: File expiry time.
+       397 +              has_transcript: Whether video has available 
+           + transcript.
+       398 +              audio_fallback: Whether audio was downloaded as
+           +  fallback.
+       399            """
+       400            now = datetime.now(timezone.utc)
+       401            video_info_json = json.dumps(video_info.to_dict())
+     ...
+       403                    """
+       404                    UPDATE tasks
+       405                    SET status = ?, video_info = ?, 
+             audio_file_id = ?,
+       406 -                      transcript_file_id = ?, completed_at = 
+           -  ?, expires_at = ?
+       406 +                      transcript_file_id = ?, completed_at = 
+           +  ?, expires_at = ?,
+       407 +                      has_transcript = ?, audio_fallback = ?
+       408                    WHERE id = ?
+       409                    """,
+       410                    (
+     ...
+       413                        transcript_file_id,
+       414                        now,
+       415                        expires_at,
+       416 +                      1 if has_transcript else 0,
+       417 +                      1 if audio_fallback else 0,
+       418                        task_id,
+       419                    ),
+       420                )
+
+● Update(src\db\database.py)
+  ⎿  Updated src\db\database.py with 12 additions                      
+       682            if row["video_info"]:
+       683                video_info = 
+             VideoInfo.from_dict(json.loads(row["video_info"]))
+       684    
+       685 +          # Handle new fields with backwards compatibility
+       686 +          include_audio = row["include_audio"] if 
+           + "include_audio" in row.keys() else 1
+       687 +          include_transcript = (
+       688 +              row["include_transcript"] if 
+           + "include_transcript" in row.keys() else 1
+       689 +          )
+       690 +          has_transcript = row["has_transcript"] if 
+           + "has_transcript" in row.keys() else None
+       691 +          audio_fallback = row["audio_fallback"] if 
+           + "audio_fallback" in row.keys() else 0
+       692 +  
+       693            return Task(
+       694                id=row["id"],
+       695                video_id=row["video_id"],
+       696                video_url=row["video_url"],
+       697                status=TaskStatus(row["status"]),
+       698 +              include_audio=bool(include_audio),
+       699 +              include_transcript=bool(include_transcript),
+       700 +              has_transcript=bool(has_transcript) if 
+           + has_transcript is not None else None,
+       701 +              audio_fallback=bool(audio_fallback),
+       702                video_info=video_info,
+       703                audio_file_id=row["audio_file_id"],
+       704                transcript_file_id=row["transcript_file_id"],
+
+● Update(src\services\task_service.py)
+  ⎿  Updated src\services\task_service.py with 2 additions
+       14        ErrorInfoResponse,
+       15        FileInfoResponse,
+       16        FilesResponse,
+       17 +      RequestModeResponse,
+       18 +      ResultInfoResponse,
+       19        TaskListResponse,
+       20        TaskResponse,
+       21        VideoInfoResponse,
+
+● Update(src\services\task_service.py)
+  ⎿  Updated src\services\task_service.py with 2 additions             
+       84                video_id=video_id,
+       85                video_url=request.video_url,
+       86                status=TaskStatus.PENDING,
+       87 +              include_audio=request.include_audio,
+       88 +              include_transcript=request.include_transcript,
+       89                callback_url=str(request.callback_url) if 
+            request.callback_url else None,
+       90                callback_secret=request.callback_secret,
+       91                callback_status=CallbackStatus.PENDING if 
+            request.callback_url else None,
+
+● Update(src\services\task_service.py)
+  ⎿  Updated src\services\task_service.py with 5 additions               
+       242                started_at=task.started_at,
+       243                completed_at=task.completed_at,
+       244                expires_at=task.expires_at,
+       245 +              # Request mode
+       246 +              request=RequestModeResponse(
+       247 +                  include_audio=task.include_audio,
+       248 +                  include_transcript=task.include_transcript,
+       249 +              ),
+       250            )
+       251    
+       252            # Add queue position for pending tasks
+
+● Read(src\services\task_service.py)
+  ⎿  Read 69 lines
+
+● Update(src\services\task_service.py)
+  ⎿  Updated src\services\task_service.py with 35 additions and 24 removals
+       277                        thumbnail=task.video_info.thumbnail,
+       278                    )
+       279    
+       280 -              # Get file info
+       281 -              if task.audio_file_id:
+       282 -                  files = await 
+           - self.db.get_files_by_task(task.id)
+       283 -                  audio_file = next(
+       284 -                      (f for f in files if f.id == 
+           - task.audio_file_id), None
+       280 +              # Add result info
+       281 +              if task.has_transcript is not None:
+       282 +                  response.result = ResultInfoResponse(
+       283 +                      has_transcript=task.has_transcript,
+       284 +                      audio_fallback=task.audio_fallback,
+       285                    )
+       286 -                  transcript_file = (
+       287 -                      next((f for f in files if f.id == 
+           - task.transcript_file_id), None)
+       288 -                      if task.transcript_file_id
+       289 -                      else None
+       290 -                  )
+       286    
+       287 +              # Get file info
+       288 +              files = await 
+           + self.db.get_files_by_task(task.id)
+       289 +              audio_file = (
+       290 +                  next((f for f in files if f.id == 
+           + task.audio_file_id), None)
+       291 +                  if task.audio_file_id
+       292 +                  else None
+       293 +              )
+       294 +              transcript_file = (
+       295 +                  next((f for f in files if f.id == 
+           + task.transcript_file_id), None)
+       296 +                  if task.transcript_file_id
+       297 +                  else None
+       298 +              )
+       299 +  
+       300 +              # Build files response if any file exists
+       301 +              if audio_file or transcript_file:
+       302 +                  audio_info = None
+       303                    if audio_file:
+       304                        audio_info = FileInfoResponse(
+       305                            
+             url=f"/api/v1/files/{audio_file.id}",
+     ...
+       299                            else None,
+       300                        )
+       301    
+       302 -                      transcript_info = None
+       303 -                      if transcript_file:
+       304 -                          transcript_info = FileInfoResponse(
+       305 -                              
+           -  url=f"/api/v1/files/{transcript_file.id}",
+       306 -                              size=transcript_file.size,
+       307 -                              format=transcript_file.format,
+       308 -                              
+           -  language=transcript_file.metadata.get("language")
+       309 -                              if transcript_file.metadata
+       310 -                              else None,
+       311 -                          )
+       312 -  
+       313 -                      response.files = FilesResponse(
+       314 -                          audio=audio_info,
+       315 -                          transcript=transcript_info,
+       302 +                  transcript_info = None
+       303 +                  if transcript_file:
+       304 +                      transcript_info = FileInfoResponse(
+       305 +                          
+           +  url=f"/api/v1/files/{transcript_file.id}",
+       306 +                          size=transcript_file.size,
+       307 +                          format=transcript_file.format,
+       308 +                          
+           +  language=transcript_file.metadata.get("language")
+       309 +                          if transcript_file.metadata
+       310 +                          else None,
+       311                        )
+       312    
+       313 +                  response.files = FilesResponse(
+       314 +                      audio=audio_info,
+       315 +                      transcript=transcript_info,
+       316 +                  )
+       317 +  
+       318            # Add error info for failed tasks
+       319            elif task.status == TaskStatus.FAILED:
+       320                if task.error_code:
+
+● Update(src\core\downloader.py)
+  ⎿  Updated src\core\downloader.py with 20 additions and 1 removal     
+        86        """Result of a download operation."""
+        87    
+        88        video_info: VideoInfo
+        89 -      audio_path: Path
+        89 +      audio_path: Optional[Path] = None  # May be None for 
+           + transcript_only mode
+        90        transcript_path: Optional[Path] = None
+        91    
+        92    
+        93    @dataclass
+        94 +  class TranscriptOnlyResult:
+        95 +      """Result of transcript-only extraction (no audio 
+           + download)."""
+        96 +  
+        97 +      video_info: VideoInfo
+        98 +      has_transcript: bool  # Whether video has available 
+           + transcript
+        99 +      transcript_path: Optional[Path] = None  # Path to 
+           + subtitle file if fetched
+       100 +  
+       101 +  
+       102 +  @dataclass
+       103    class _AudioDownloadResult:
+       104        """Internal result of audio download (before subtitle 
+             fetch)."""
+       105    
+     ...
+       100        raw_info: dict[str, Any]  # Raw yt-dlp info for 
+             subtitle URL extraction
+       101    
+       102    
+       103 +  @dataclass
+       104 +  class _InfoExtractionResult:
+       105 +      """Internal result of video info extraction (no 
+           + download)."""
+       106 +  
+       107 +      video_info: VideoInfo
+       108 +      video_id: str
+       109 +      raw_info: dict[str, Any]  # Raw yt-dlp info for 
+           + subtitle URL extraction
+       110 +      has_subtitle: bool  # Whether video has available 
+           + subtitles
+       111 +  
+       112 +  
+       113    class DownloadError(Exception):
+       114        """Custom exception for download errors."""
+       115    
+
+● Read(src\core\downloader.py)
+  ⎿  Read 80 lines
+
+● Update(src\core\downloader.py)
+  ⎿  Updated src\core\downloader.py with 126 additions                   
+       338                logger.warning(f"Failed to fetch subtitle via 
+             TikHub: {e}")
+       339                return None
+       340    
+       341 +      async def extract_transcript_only(
+       342 +          self,
+       343 +          video_url: str,
+       344 +          output_dir: Path,
+       345 +      ) -> TranscriptOnlyResult:
+       346 +          """
+       347 +          Extract video info and fetch transcript only (no 
+           + audio download).
+       348 +  
+       349 +          This is used for transcript_only mode where client 
+           + only wants subtitles.
+       350 +          If subtitles are available, they are fetched via 
+           + TikHub API.
+       351 +  
+       352 +          Args:
+       353 +              video_url: YouTube video URL.
+       354 +              output_dir: Directory to save subtitle file.
+       355 +  
+       356 +          Returns:
+       357 +              TranscriptOnlyResult with video info and 
+           + subtitle status.
+       358 +  
+       359 +          Raises:
+       360 +              DownloadError: If video info extraction fails.
+       361 +          """
+       362 +          if self.settings.dry_run:
+       363 +              logger.info(f"Dry run: would extract transcript
+           +  for {video_url}")
+       364 +              return TranscriptOnlyResult(
+       365 +                  video_info=VideoInfo(
+       366 +                      title="Test Video (Dry Run)",
+       367 +                      author="Test Author",
+       368 +                      duration=60,
+       369 +                  ),
+       370 +                  has_transcript=True,
+       371 +                  transcript_path=output_dir / "test.en.srt",
+       372 +              )
+       373 +  
+       374 +          # Ensure output directory exists
+       375 +          output_dir.mkdir(parents=True, exist_ok=True)
+       376 +  
+       377 +          try:
+       378 +              # Extract video info without downloading
+       379 +              loop = asyncio.get_event_loop()
+       380 +              info_result = await loop.run_in_executor(
+       381 +                  None, self._extract_info_only, video_url
+       382 +              )
+       383 +  
+       384 +              if not info_result.has_subtitle:
+       385 +                  logger.info(
+       386 +                      f"No subtitle available for video 
+           + {info_result.video_id}, "
+       387 +                      "audio download required for ASR"
+       388 +                  )
+       389 +                  return TranscriptOnlyResult(
+       390 +                      video_info=info_result.video_info,
+       391 +                      has_transcript=False,
+       392 +                      transcript_path=None,
+       393 +                  )
+       394 +  
+       395 +              # Fetch subtitle via TikHub API
+       396 +              transcript_path = await 
+           + self._fetch_subtitle_via_tikhub(
+       397 +                  info_result.raw_info,
+       398 +                  output_dir,
+       399 +                  info_result.video_id,
+       400 +              )
+       401 +  
+       402 +              logger.info(f"Transcript extraction completed: 
+           + {info_result.video_id}")
+       403 +              logger.info(f"Transcript: {transcript_path}")
+       404 +  
+       405 +              return TranscriptOnlyResult(
+       406 +                  video_info=info_result.video_info,
+       407 +                  has_transcript=True,
+       408 +                  transcript_path=transcript_path,
+       409 +              )
+       410 +  
+       411 +          except yt_dlp.utils.DownloadError as e:
+       412 +              error_code, message = self._map_ytdlp_error(e)
+       413 +              logger.error(f"Info extraction failed: 
+           + {error_code.value} - {message}")
+       414 +              raise DownloadError(error_code, message) from e
+       415 +  
+       416 +          except Exception as e:
+       417 +              logger.error(f"Unexpected error during info 
+           + extraction: {e}")
+       418 +              raise DownloadError(ErrorCode.DOWNLOAD_FAILED, 
+           + str(e)) from e
+       419 +  
+       420 +      def _extract_info_only(self, video_url: str) -> 
+           + _InfoExtractionResult:
+       421 +          """
+       422 +          Extract video info without downloading (runs in 
+           + thread pool).
+       423 +  
+       424 +          Args:
+       425 +              video_url: YouTube video URL.
+       426 +  
+       427 +          Returns:
+       428 +              _InfoExtractionResult with video info and 
+           + subtitle availability.
+       429 +          """
+       430 +          logger.info(f"[POT] Extracting info for: 
+           + {video_url}")
+       431 +  
+       432 +          # Build minimal options for info extraction
+       433 +          opts = {
+       434 +              **self._base_opts,
+       435 +              "skip_download": True,
+       436 +          }
+       437 +  
+       438 +          with yt_dlp.YoutubeDL(opts) as ydl:
+       439 +              logger.info("[POT] Calling extract_info (info 
+           + only, no download)")
+       440 +              info = ydl.extract_info(video_url, 
+           + download=False)
+       441 +  
+       442 +              if not info:
+       443 +                  raise DownloadError(
+       444 +                      ErrorCode.DOWNLOAD_FAILED, "Failed to 
+           + extract video info"
+       445 +                  )
+       446 +  
+       447 +              video_id = info["id"]
+       448 +              video_info = self._extract_video_info(info)
+       449 +  
+       450 +              # Check if subtitles are available
+       451 +              has_subtitle = bool(
+       452 +                  info.get("subtitles") or 
+           + info.get("automatic_captions")
+       453 +              )
+       454 +  
+       455 +              logger.info(
+       456 +                  f"[POT] Video {video_id}: 
+           + has_subtitle={has_subtitle}, "
+       457 +                  f"title='{info.get('title', 'N/A')[:50]}'"
+       458 +              )
+       459 +  
+       460 +              return _InfoExtractionResult(
+       461 +                  video_info=video_info,
+       462 +                  video_id=video_id,
+       463 +                  raw_info=info,
+       464 +                  has_subtitle=has_subtitle,
+       465 +              )
+       466 +  
+       467        def _build_download_opts(
+       468            self,
+       469            output_dir: Path,
+
+● Update(src\core\worker.py)
+  ⎿  Updated src\core\worker.py with 6 additions and 1 removal
+       11    from typing import Optional
+       12    
+       13    from src.config import Settings
+       14 -  from src.core.downloader import DownloadError, 
+          - DownloadResult, YouTubeDownloader
+       14 +  from src.core.downloader import (
+       15 +      DownloadError,
+       16 +      DownloadResult,
+       17 +      TranscriptOnlyResult,
+       18 +      YouTubeDownloader,
+       19 +  )
+       20    from src.db.database import Database
+       21    from src.db.models import (
+       22        ErrorCode,
+
+● Read(src\core\worker.py)
+  ⎿  Read 120 lines
+
+● Update(src\core\worker.py)
+  ⎿  Updated src\core\worker.py with 7 additions and 5 removals          
+       112                # Update status to downloading
+       113                await self.db.update_task_status(task.id, 
+             TaskStatus.DOWNLOADING)
+       114    
+       115 -              # Execute download
+       116 -              download_result, audio_file_id, 
+           - transcript_file_id = await self._download_task(task)
+       115 +              # Execute download based on task mode
+       116 +              result = await self._execute_task(task)
+       117    
+       118                # Save task completion
+       119                await self.db.update_task_completed(
+       120                    task_id=task.id,
+       121 -                  video_info=download_result.video_info,
+       122 -                  audio_file_id=audio_file_id,
+       123 -                  transcript_file_id=transcript_file_id,
+       121 +                  video_info=result["video_info"],
+       122 +                  audio_file_id=result["audio_file_id"],
+       123 +                  transcript_file_id=result["
+           +  transcript_file_id"],
+       124                    expires_at=get_expiry_time(self.settings.fi
+             le_retention_days),
+       125 +                  has_transcript=result["has_transcript"],
+       126 +                  audio_fallback=result["audio_fallback"],
+       127                )
+       128    
+       129                logger.info(f"Task {task.id} completed 
+             successfully")
+
+● Update(src\core\worker.py)
+  ⎿  Updated src\core\worker.py with 103 additions and 22 removals       
+       157                logger.debug(f"Waiting {wait_time:.1f}s before 
+             next task")
+       158                await asyncio.sleep(wait_time)
+       159    
+       160 -      async def _download_task(
+       161 -          self, task: Task
+       162 -      ) -> tuple[DownloadResult, str, Optional[str]]:
+       160 +      async def _execute_task(self, task: Task) -> dict:
+       161            """
+       162 -          Execute download for a task.
+       162 +          Execute task based on its mode configuration.
+       163    
+       164 +          Handles different modes:
+       165 +          - Full mode (include_audio=True, 
+           + include_transcript=True): Download audio + fetch transcript
+       166 +          - Audio only (include_audio=True, 
+           + include_transcript=False): Only download audio
+       167 +          - Transcript only (include_audio=False, 
+           + include_transcript=True): Try to fetch transcript,
+       168 +            fallback to audio download if no transcript 
+           + available
+       169 +  
+       170            Args:
+       171 -              task: Task to download.
+       171 +              task: Task to execute.
+       172    
+       173            Returns:
+       174 -              Tuple of (DownloadResult, audio_file_id, 
+           - transcript_file_id).
+       174 +              Dict with keys: video_info, audio_file_id, 
+           + transcript_file_id, has_transcript, audio_fallback
+       175    
+       176            Raises:
+       177 -              DownloadError: If download fails.
+       177 +              DownloadError: If task execution fails.
+       178            """
+       179 -          # Create temporary directory for download
+       179 +          # Determine execution mode
+       180 +          if not task.include_audio and 
+           + task.include_transcript:
+       181 +              # Transcript-only mode: try to get transcript 
+           + first
+       182 +              return await 
+           + self._execute_transcript_only(task)
+       183 +          else:
+       184 +              # Full or audio-only mode
+       185 +              return await self._execute_download(task)
+       186 +  
+       187 +      async def _execute_transcript_only(self, task: Task) ->
+           +  dict:
+       188 +          """
+       189 +          Execute transcript-only mode.
+       190 +  
+       191 +          First checks if transcript is available. If yes, 
+           + only fetch transcript.
+       192 +          If no transcript available, fallback to downloading
+           +  audio.
+       193 +  
+       194 +          Args:
+       195 +              task: Task to execute.
+       196 +  
+       197 +          Returns:
+       198 +              Dict with execution result.
+       199 +          """
+       200            with tempfile.TemporaryDirectory() as temp_dir:
+       201                output_dir = Path(temp_dir)
+       202    
+       203 +              # Try to extract transcript only
+       204 +              logger.info(f"Task {task.id}: Attempting 
+           + transcript-only extraction")
+       205 +              transcript_result = await 
+           + self.downloader.extract_transcript_only(
+       206 +                  video_url=task.video_url,
+       207 +                  output_dir=output_dir,
+       208 +              )
+       209 +  
+       210 +              if transcript_result.has_transcript and 
+           + transcript_result.transcript_path:
+       211 +                  # Success: transcript available and fetched
+       212 +                  logger.info(f"Task {task.id}: Transcript 
+           + available, no audio download needed")
+       213 +  
+       214 +                  # Save transcript file
+       215 +                  lang = 
+           + self._extract_language(transcript_result.transcript_path)
+       216 +                  transcript_file = await 
+           + self.file_service.create_file_record(
+       217 +                      task_id=task.id,
+       218 +                      file_type=FileType.TRANSCRIPT,
+       219 +                      
+           + source_path=transcript_result.transcript_path,
+       220 +                      metadata={"language": lang},
+       221 +                  )
+       222 +  
+       223 +                  return {
+       224 +                      "video_info": 
+           + transcript_result.video_info,
+       225 +                      "audio_file_id": None,
+       226 +                      "transcript_file_id": 
+           + transcript_file.id,
+       227 +                      "has_transcript": True,
+       228 +                      "audio_fallback": False,
+       229 +                  }
+       230 +              else:
+       231 +                  # No transcript available, fallback to 
+           + audio download
+       232 +                  logger.info(
+       233 +                      f"Task {task.id}: No transcript 
+           + available, falling back to audio download"
+       234 +                  )
+       235 +                  return await self._execute_download(task, 
+           + audio_fallback=True)
+       236 +  
+       237 +      async def _execute_download(self, task: Task, 
+           + audio_fallback: bool = False) -> dict:
+       238 +          """
+       239 +          Execute audio download (with optional transcript 
+           + fetch).
+       240 +  
+       241 +          Args:
+       242 +              task: Task to execute.
+       243 +              audio_fallback: Whether this is a fallback from
+           +  transcript-only mode.
+       244 +  
+       245 +          Returns:
+       246 +              Dict with execution result.
+       247 +          """
+       248 +          with tempfile.TemporaryDirectory() as temp_dir:
+       249 +              output_dir = Path(temp_dir)
+       250 +  
+       251                # Download with progress callback
+       252                def progress_callback(progress: int) -> None:
+       253                    task.progress = progress
+       254                    logger.debug(f"Task {task.id} progress: 
+             {progress}%")
+       255    
+       256 +              # Determine if we should fetch transcript
+       257 +              fetch_transcript = task.include_transcript
+       258 +  
+       259                result = await self.downloader.download(
+       260                    video_url=task.video_url,
+       261                    output_dir=output_dir,
+       262                    progress_callback=progress_callback,
+       263                )
+       264    
+       265 -              # Move files to permanent storage
+       266 -              audio_file = await 
+           - self.file_service.create_file_record(
+       267 -                  task_id=task.id,
+       268 -                  file_type=FileType.AUDIO,
+       269 -                  source_path=result.audio_path,
+       270 -                  metadata={"bitrate": 
+           - self.settings.audio_quality},
+       271 -              )
+       265 +              # Move audio file to permanent storage
+       266 +              audio_file: Optional[FileRecord] = None
+       267 +              if result.audio_path and 
+           + result.audio_path.exists():
+       268 +                  audio_file = await 
+           + self.file_service.create_file_record(
+       269 +                      task_id=task.id,
+       270 +                      file_type=FileType.AUDIO,
+       271 +                      source_path=result.audio_path,
+       272 +                      metadata={"bitrate": 
+           + self.settings.audio_quality},
+       273 +                  )
+       274    
+       275 +              # Move transcript file if exists and transcript
+           +  is requested
+       276                transcript_file: Optional[FileRecord] = None
+       277 -              if result.transcript_path and 
+           - result.transcript_path.exists():
+       278 -                  # Extract language from filename
+       277 +              has_transcript = False
+       278 +              if fetch_transcript and result.transcript_path 
+           + and result.transcript_path.exists():
+       279 +                  has_transcript = True
+       280                    lang = 
+             self._extract_language(result.transcript_path)
+       281                    transcript_file = await 
+             self.file_service.create_file_record(
+       282                        task_id=task.id,
+     ...
+       206                        metadata={"language": lang},
+       207                    )
+       208    
+       209 -              return (
+       210 -                  result,
+       211 -                  audio_file.id,
+       212 -                  
+           -  transcript_file.id if transcript_file else None,
+       213 -              )
+       209 +              return {
+       210 +                  "video_info": result.video_info,
+       211 +                  "audio_file_id": audio_file.id if 
+           + audio_file else None,
+       212 +                  "transcript_file_id": 
+           +  transcript_file.id if transcript_file else None,
+       213 +                  "has_transcript": has_transcript,
+       214 +                  "audio_fallback": audio_fallback,
+       215 +              }
+       216    
+       217        async def _handle_download_error(self, task: Task, 
+             error: DownloadError) -> None:
+       218            """
+
+● Update(README.md)
+  ⎿  Updated README.md with 25 additions                                 
+        86      -H "X-API-Key: your-api-key" \
+        87      -d '{
+        88        "video_url": 
+             "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+        89 +      "include_audio": true,
+        90 +      "include_transcript": true,
+        91        "callback_url": "https://your-server.com/webhook",
+        92        "callback_secret": "your-hmac-secret"
+        93      }'
+        94    ```
+        95    
+        96 +  **请求参数**
+        97 +  
+        98 +  | 参数 | 类型 | 必填 | 默认值 | 说明 |
+        99 +  |------|------|------|--------|------|
+       100 +  | `video_url` | string | 是 | - | YouTube 视频 URL |
+       101 +  | `include_audio` | boolean | 否 | true | 是否下载音频 |
+       102 +  | `include_transcript` | boolean | 否 | true | 是否获取字幕
+           +  |
+       103 +  | `callback_url` | string | 否 | - | Webhook 回调 URL |
+       104 +  | `callback_secret` | string | 否 | - | HMAC 
+           + 签名密钥（8-256字符） |
+       105 +  
+       106 +  **下载模式说明**
+       107 +  
+       108 +  | include_audio | include_transcript | 行为 |
+       109 +  |---------------|-------------------|------|
+       110 +  | `true` | `true` | 下载音频 + 获取字幕（默认） |
+       111 +  | `true` | `false` | 仅下载音频 |
+       112 +  | `false` | `true` | 仅获取字幕，若无字幕则自动下载音频 |
+       113 +  | `false` | `false` | 无效请求，返回错误 |
+       114 +  
+       115    **响应**
+       116    ```json
+       117    {
+       118      "task_id": "550e8400-e29b-41d4-a716-446655440000",
+       119      "status": "pending",
+       120      "video_id": "dQw4w9WgXcQ",
+       121 +    "request": {
+       122 +      "include_audio": true,
+       123 +      "include_transcript": true
+       124 +    },
+       125      "position": 3,
+       126      "estimated_wait": 180,
+       127      "created_at": "2025-12-12T10:00:00+08:00"
+
+● Update(README.md)
+  ⎿  Updated README.md with 73 additions and 2 removals                
+       136      -H "X-API-Key: your-api-key"
+       137    ```
+       138    
+       139 -  **响应 - 已完成**
+       139 +  **响应 - 已完成（音频+字幕模式）**
+       140    ```json
+       141    {
+       142      "task_id": "550e8400-e29b-41d4-a716-446655440000",
+       143      "status": "completed",
+       144      "video_id": "dQw4w9WgXcQ",
+       145 +    "request": {
+       146 +      "include_audio": true,
+       147 +      "include_transcript": true
+       148 +    },
+       149 +    "result": {
+       150 +      "has_transcript": true,
+       151 +      "audio_fallback": false
+       152 +    },
+       153      "video_info": {
+       154        "title": "Rick Astley - Never Gonna Give You Up",
+       155        "author": "Rick Astley",
+     ...
+       155          "bitrate": 128
+       156        },
+       157        "transcript": {
+       158 -        "url": "/api/v1/files/abc123.json",
+       158 +        "url": "/api/v1/files/abc123.srt",
+       159          "size": 12345,
+       160          "language": "en"
+       161        }
+     ...
+       164    }
+       165    ```
+       166    
+       167 +  **响应 - 已完成（仅字幕模式，视频有字幕）**
+       168 +  ```json
+       169 +  {
+       170 +    "task_id": "550e8400-e29b-41d4-a716-446655440000",
+       171 +    "status": "completed",
+       172 +    "video_id": "dQw4w9WgXcQ",
+       173 +    "request": {
+       174 +      "include_audio": false,
+       175 +      "include_transcript": true
+       176 +    },
+       177 +    "result": {
+       178 +      "has_transcript": true,
+       179 +      "audio_fallback": false
+       180 +    },
+       181 +    "video_info": {
+       182 +      "title": "Rick Astley - Never Gonna Give You Up",
+       183 +      "author": "Rick Astley",
+       184 +      "duration": 213
+       185 +    },
+       186 +    "files": {
+       187 +      "audio": null,
+       188 +      "transcript": {
+       189 +        "url": "/api/v1/files/abc123.srt",
+       190 +        "size": 12345,
+       191 +        "language": "en"
+       192 +      }
+       193 +    },
+       194 +    "expires_at": "2025-02-10T10:00:00+08:00"
+       195 +  }
+       196 +  ```
+       197 +  
+       198 +  **响应 - 已完成（仅字幕模式，视频无字幕，自动下载音频）**
+       199 +  ```json
+       200 +  {
+       201 +    "task_id": "550e8400-e29b-41d4-a716-446655440000",
+       202 +    "status": "completed",
+       203 +    "video_id": "dQw4w9WgXcQ",
+       204 +    "request": {
+       205 +      "include_audio": false,
+       206 +      "include_transcript": true
+       207 +    },
+       208 +    "result": {
+       209 +      "has_transcript": false,
+       210 +      "audio_fallback": true
+       211 +    },
+       212 +    "video_info": {
+       213 +      "title": "Rick Astley - Never Gonna Give You Up",
+       214 +      "author": "Rick Astley",
+       215 +      "duration": 213
+       216 +    },
+       217 +    "files": {
+       218 +      "audio": {
+       219 +        "url": "/api/v1/files/abc123.m4a",
+       220 +        "size": 3456789,
+       221 +        "format": "m4a",
+       222 +        "bitrate": 128
+       223 +      },
+       224 +      "transcript": null
+       225 +    },
+       226 +    "expires_at": "2025-02-10T10:00:00+08:00"
+       227 +  }
+       228 +  ```
+       229 +  
+       230    ### Webhook 回调
+       231    
+       232    下载完成/失败后，系统会 POST 到指定的 `callback_url`：
+
+● Bash(.venv\Scripts\python.exe -m mypy src --ignore-missing-imports 2>&1 ||
+      echo "mypy not installed, trying pyright" && .venv\Scripts\python.exe -m
+      pyright src 2>&1…)
+  ⎿  /usr/bin/bash: line 1: .venvScriptspython.exe: command not found
+     mypy not installed, trying pyright
+     /usr/bin/bash: line 1: .venvScriptspython.exe: command not found
+     pyright not installed either
+
+● Bash(.\.venv\Scripts\python.exe -m mypy src --ignore-missing-imports)
+  ⎿  Error: Exit code 127
+     /usr/bin/bash: line 1: ..venvScriptspython.exe: command not found
+
+● Bash(cd /d D:\MyFolders\Developments\0Python\251212_youtube_download_api &&
+      D:\MyFolders\Developments\0Python\251212_youtube_download_api\.venv\Script
+      s\python.exe -m…)
+  ⎿  Error: Exit code 1
+     /usr/bin/bash: line 1: cd: too many arguments
+
+● Bash("D:\MyFolders\Developments\0Python\251212_youtube_download_api\.venv\Scri
+      pts\python.exe" -m mypy
+      "D:\MyFolders\Developments\0Python\251212_youtube_download_api\…)
+  ⎿  Error: Exit code 127
+     /usr/bin/bash: line 1: D:\MyFolders\Developments\0Python\251212_youtube_down
+     load_api\.venv\Scripts\python.exe: No such file or directory
+
+● Bash(python -m mypy src --ignore-missing-imports)
+  ⎿  Error: Exit code 1
+     src\db\models.py:208: error: Returning Any from function declared to return 
+     "bool"  [no-any-return]
+     src\utils\logger.py:59: error: Argument "format" to "add" of "Logger" has 
+     incompatible type "str | None"; expected "str | Callable[[Record], str]"  
+     [arg-type]
+     src\utils\logger.py:73: error: Argument "format" to "add" of "Logger" has 
+     incompatible type "str | None"; expected "str | Callable[[Record], str]"  
+     [arg-type]
+     src\db\database.py:287: error: Value of type "Row | None" is not indexable  
+     [index]
+     src\config.py:136: error: Missing named argument "api_key" for "Settings"  
+     [call-arg]
+     src\services\task_service.py:236: error: Missing named argument "position" 
+     for "TaskResponse"  [call-arg]
+     src\services\task_service.py:236: error: Missing named argument 
+     "estimated_wait" for "TaskResponse"  [call-arg]
+     src\services\task_service.py:236: error: Missing named argument "progress" 
+     for "TaskResponse"  [call-arg]
+     src\services\task_service.py:304: error: Missing named argument "language" 
+     for "FileInfoResponse"  [call-arg]
+
+
+     … +9 lines (ctrl+o to see all)
+
+● Read(src\db\database.py)
+  ⎿  Read 20 lines
+
+● Read(src\api\schemas.py)
+  ⎿  Read 30 lines
+
+● Read(src\core\downloader.py)
+  ⎿  Read 20 lines
+
+● Read(src\services\task_service.py)
+  ⎿  Read 30 lines
+
+● Bash(python -c "from src.api.schemas import CreateTaskRequest,      timeout: 
+      TaskResponse; from src.db.models import Task; from              30s
+      src.core.downloader import YouTubeDownloader, Trans…)
+  ⎿  All imports successful
+
+● 已完成所有修改。以下是实现的完整方案总结：
+
+  修改文件列表
+
+  1. src/api/schemas.py
+
+  - 添加 include_audio 和 include_transcript 请求参数
+  - 添加验证：至少需要其中一个为 True
+  - 新增 RequestModeResponse 和 ResultInfoResponse 模型
+  - FilesResponse.audio 改为可选（支持仅字幕模式）
+  - TaskResponse 添加 request 和 result 字段
+
+  2. src/db/models.py
+
+  - Task 模型添加字段：
+    - include_audio / include_transcript - 请求模式
+    - has_transcript / audio_fallback - 执行结果
+
+  3. src/db/database.py
+
+  - 数据库表结构添加新字段
+  - 更新 create_task 方法存储请求模式
+  - 更新 update_task_completed 方法存储执行结果
+  - 更新 _row_to_task 方法读取新字段
+
+  4. src/services/task_service.py
+
+  - 更新 create_task 传递请求模式
+  - 更新 _build_task_response 返回 request 和 result 信息
+
+  5. src/core/downloader.py
+
+  - 新增 TranscriptOnlyResult 数据类
+  - 新增 extract_transcript_only 方法（仅提取字幕，不下载音频）
+  - 新增 _extract_info_only 内部方法
+
+  6. src/core/worker.py
+
+  - 新增 _execute_task 根据模式分发执行
+  - 新增 _execute_transcript_only 处理仅字幕模式
+  - 新增 _execute_download 处理音频下载模式
+
+  7. README.md
+
+  - 更新 API 文档，添加新参数说明
+  - 添加下载模式说明表格
+  - 添加不同场景的响应示例
+
+  执行逻辑
+
+  | include_audio | include_transcript | 行为                                    |
+  |---------------|--------------------|-----------------------------------------|
+  | true          | true               | 下载音频 + 获取字幕                     |
+  | true          | false              | 仅下载音频                              |
+  | false         | true               | 先检查字幕 → 有则仅取字幕；无则下载音频 |
+  | false         | false              | 请求被拒绝                              |
+
+  代码已通过导入测试验证。mypy 报告的类型错误大多是项目原有问题，非本次修改引入。
+
+> 怎么测试该功能是否正常 
+
+● 有几种测试方式：
+
+  1. 启动服务进行手动测试
+
+  # 启动开发服务
+  .\scripts\dev.ps1
+  # 或者
+  $env:ENV_FILE=".env.development"; uvicorn src.main:app --reload --host 127.0.0.1 --port 8000
+
+  然后用 curl 测试不同模式：
+
+  # 测试1: 默认模式（音频+字幕）
+  curl -X POST http://localhost:8000/api/v1/tasks \
+    -H "Content-Type: application/json" \
+    -H "X-API-Key: dev-test-key-12345" \
+    -d '{"video_url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ"}'
+
+  # 测试2: 仅字幕模式
+  curl -X POST http://localhost:8000/api/v1/tasks \
+    -H "Content-Type: application/json" \
+    -H "X-API-Key: dev-test-key-12345" \
+    -d '{"video_url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ", "include_audio": false, "include_transcript": true}'
+
+  # 测试3: 仅音频模式
+  curl -X POST http://localhost:8000/api/v1/tasks \
+    -H "Content-Type: application/json" \
+    -H "X-API-Key: dev-test-key-12345" \
+    -d '{"video_url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ", "include_audio": true, "include_transcript": false}'
+
+  # 测试4: 无效请求（应返回错误）
+  curl -X POST http://localhost:8000/api/v1/tasks \
+    -H "Content-Type: application/json" \
+    -H "X-API-Key: dev-test-key-12345" \
+    -d '{"video_url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ", "include_audio": false, "include_transcript": false}'
+
+  # 查询任务状态
+  curl http://localhost:8000/api/v1/tasks/{task_id} \
+    -H "X-API-Key: dev-test-key-12345"
+
+  2. 使用 Swagger UI
+
+  访问 http://localhost:8000/docs，可以直接在网页上测试 API。
+
+  3. 编写单元测试
+
+  需要我帮你编写自动化测试吗？可以覆盖：
+  - 请求参数验证
+  - 不同模式的任务创建
+  - Worker 执行逻辑
+  - 响应格式验证
+
+> 自动化来测试整个逻辑是否正确。但不应该实际向 youtube 
+发出请求，避免被风控。 
+
+● 好的，我来编写自动化测试，使用 mock 模拟 YouTube 相关操作。
+
+● Search(pattern: "tests/**/*.py")
+  ⎿  Found 6 files (ctrl+o to expand)
+
+● Read(tests\conftest.py)
+  ⎿  Read 112 lines
+
+● Update(tests\conftest.py)
+  ⎿  Updated tests\conftest.py with 44 additions and 2 removals       
+       61    @pytest.fixture
+       62    def mock_downloader() -> AsyncMock:
+       63        """Mock yt-dlp downloader."""
+       64 -      from src.core.downloader import DownloadResult
+       64 +      from src.core.downloader import DownloadResult
+          +  , TranscriptOnlyResult
+       65    
+       66        downloader = AsyncMock()
+       67        downloader.download.return_value = DownloadResult(
+     ...
+        72                channel_id="UC123456",
+        73            ),
+        74            audio_path=Path("/tmp/test.m4a"),
+        75 -          transcript_path=Path("/tmp/test.en.json3"),
+        75 +          transcript_path=Path("/tmp/test.en.srt"),
+        76        )
+        77 +      # 默认模拟有字幕的情况
+        78 +      downloader.extract_transcript_only.return_value = 
+           + TranscriptOnlyResult(
+        79 +          video_info=VideoInfo(
+        80 +              title="Test Video",
+        81 +              author="Test Author",
+        82 +              duration=60,
+        83 +              channel_id="UC123456",
+        84 +          ),
+        85 +          has_transcript=True,
+        86 +          transcript_path=Path("/tmp/test.en.srt"),
+        87 +      )
+        88        return downloader
+        89    
+        90    
+        91    @pytest.fixture
+        92 +  def mock_downloader_no_transcript() -> AsyncMock:
+        93 +      """Mock downloader for videos without transcript."""
+        94 +      from src.core.downloader import DownloadResult, 
+           + TranscriptOnlyResult
+        95 +  
+        96 +      downloader = AsyncMock()
+        97 +      # 下载时没有字幕
+        98 +      downloader.download.return_value = DownloadResult(
+        99 +          video_info=VideoInfo(
+       100 +              title="Test Video No Subs",
+       101 +              author="Test Author",
+       102 +              duration=60,
+       103 +              channel_id="UC123456",
+       104 +          ),
+       105 +          audio_path=Path("/tmp/test.m4a"),
+       106 +          transcript_path=None,
+       107 +      )
+       108 +      # 提取字幕时发现没有字幕
+       109 +      downloader.extract_transcript_only.return_value = 
+           + TranscriptOnlyResult(
+       110 +          video_info=VideoInfo(
+       111 +              title="Test Video No Subs",
+       112 +              author="Test Author",
+       113 +              duration=60,
+       114 +              channel_id="UC123456",
+       115 +          ),
+       116 +          has_transcript=False,
+       117 +          transcript_path=None,
+       118 +      )
+       119 +      return downloader
+       120 +  
+       121 +  
+       122 +  @pytest.fixture
+       123    def mock_notifier() -> MagicMock:
+       124        """Mock WeCom notifier."""
+       125        notifier = MagicMock()
+
+● Write(tests\test_download_modes.py)
+  ⎿  Wrote 1 lines to tests\test_download_modes.py             
+     """
+     Tests for download mode functionality.
+     Tests the include_audio and include_transcript parameters,
+     including different mode combinations and fallback logic.
+     """
+     import tempfile
+     from pathlib import Path
+     from unittest.mock import AsyncMock, MagicMock, patch
+
+● Bash(python -m pytest tests/test_download_modes.py -v --tb=short 2>&1)
+  ⎿  Error: Exit code 2
+     ============================= test session starts 
+     =============================
+     platform win32 -- Python 3.11.7, pytest-8.4.2, pluggy-1.5.0 -- 
+     C:\Users\zlx\AppData\Local\Programs\Python\Python311\python.exe
+     cachedir: .pytest_cache
+     rootdir: D:\MyFolders\Developments\0Python\251212_youtube_download_api
+     configfile: pytest.ini
+     plugins: anyio-4.4.0, hydra-core-1.3.2, logfire-3.7.1, asyncio-0.23.3, 
+     cov-7.0.0, typeguard-2.13.3
+     asyncio: mode=Mode.AUTO
+     collecting ... collected 0 items / 1 error
+     
+     … +26 lines (ctrl+o to see all)
+
+● Read(pytest.ini)
+  ⎿  Read 11 lines
+
+● Bash(python -m pytest
+      tests/test_download_modes.py::TestCreateTaskRequestValidation -v
+      --tb=short 2>&1)
+  ⎿  Error: Exit code 2
+     ============================= test session starts 
+     =============================
+     platform win32 -- Python 3.11.7, pytest-8.4.2, pluggy-1.5.0 -- 
+     C:\Users\zlx\AppData\Local\Programs\Python\Python311\python.exe
+     cachedir: .pytest_cache
+     rootdir: D:\MyFolders\Developments\0Python\251212_youtube_download_api
+     configfile: pytest.ini
+     plugins: anyio-4.4.0, hydra-core-1.3.2, logfire-3.7.1, asyncio-0.23.3, 
+     cov-7.0.0, typeguard-2.13.3
+     asyncio: mode=Mode.AUTO
+     collecting ... collected 0 items / 1 error
+     
+     … +26 lines (ctrl+o to see all)
+
+● Bash(pip install --upgrade pytest-asyncio 2>&1) timeout: 1m 0s
+  ⎿ Requirement already satisfied: pytest-asyncio in c:\users\zlx\appdata\l
+    ocal\programs\python\python311\lib\site-packages (0.23.3)
+    Collecting pytest-asyncio
+    … +32 lines (ctrl+o to expand)
+
+
+● Bash(python -m pytest tests/test_download_modes.py -v --tb=short 2>&1)
+  ⎿  Error: Exit code 1
+     ============================= test session starts 
+     =============================
+     platform win32 -- Python 3.11.7, pytest-8.4.2, pluggy-1.5.0 -- 
+     C:\Users\zlx\AppData\Local\Programs\Python\Python311\python.exe
+     cachedir: .pytest_cache
+     rootdir: D:\MyFolders\Developments\0Python\251212_youtube_download_api
+     configfile: pytest.ini
+     plugins: anyio-4.4.0, hydra-core-1.3.2, logfire-3.7.1, asyncio-1.3.0, 
+     cov-7.0.0, typeguard-2.13.3
+     asyncio: mode=Mode.AUTO, debug=False, 
+     asyncio_default_fixture_loop_scope=None, 
+     asyncio_default_test_loop_scope=function
+     collecting ... collected 16 items
+     
+     … +119 lines (ctrl+o to see all)
+
+● Update(tests\conftest.py)
+  ⎿  Updated tests\conftest.py with 2 additions and 2 removals
+       42            pot_server_url="http://localhost:4416",
+       43            data_dir=temp_dir,
+       44            file_retention_days=1,
+       45 -          task_interval_min=1,
+       46 -          task_interval_max=2,
+       45 +          task_interval_min=5,
+       46 +          task_interval_max=10,
+       47            dry_run=True,
+       48        )
+       49    
+
+● Bash(python -m pytest tests/test_download_modes.py -v --tb=short 2>&1)
+  ⎿  Error: Exit code 1
+     ============================= test session starts 
+     =============================
+     platform win32 -- Python 3.11.7, pytest-8.4.2, pluggy-1.5.0 -- 
+     C:\Users\zlx\AppData\Local\Programs\Python\Python311\python.exe
+     cachedir: .pytest_cache
+     rootdir: D:\MyFolders\Developments\0Python\251212_youtube_download_api
+     configfile: pytest.ini
+     plugins: anyio-4.4.0, hydra-core-1.3.2, logfire-3.7.1, asyncio-1.3.0, 
+     cov-7.0.0, typeguard-2.13.3
+     asyncio: mode=Mode.AUTO, debug=False, 
+     asyncio_default_fixture_loop_scope=None, 
+     asyncio_default_test_loop_scope=function
+     collecting ... collected 16 items
+     
+     … +82 lines (ctrl+o to see all)
+
+● Read(src\services\callback_service.py)
+  ⎿  Read 30 lines
+
+● Update(tests\test_download_modes.py)
+  ⎿  Updated tests\test_download_modes.py with 1 addition and 1 removal  
+       145            """Create worker dependencies."""
+       146            task_service = TaskService(test_db, test_settings)
+       147            file_service = FileService(test_db, test_settings)
+       148 -          callback_service = CallbackService(test_db, 
+           -  test_settings)
+       148 +          callback_service = CallbackService(test_db, 
+           +  base_url="http://localhost:8000")
+       149            notify_service = NotificationService(test_settings)
+       150    
+       151            return {
+
+● Bash(python -m pytest tests/test_download_modes.py -v --tb=short 2>&1)
+  ⎿  Error: Exit code 1
+     ============================= test session starts 
+     =============================
+     platform win32 -- Python 3.11.7, pytest-8.4.2, pluggy-1.5.0 -- 
+     C:\Users\zlx\AppData\Local\Programs\Python\Python311\python.exe
+     cachedir: .pytest_cache
+     rootdir: D:\MyFolders\Developments\0Python\251212_youtube_download_api
+     configfile: pytest.ini
+     plugins: anyio-4.4.0, hydra-core-1.3.2, logfire-3.7.1, asyncio-1.3.0, 
+     cov-7.0.0, typeguard-2.13.3
+     asyncio: mode=Mode.AUTO, debug=False, 
+     asyncio_default_fixture_loop_scope=None, 
+     asyncio_default_test_loop_scope=function
+     collecting ... collected 16 items
+     
+     … +72 lines (ctrl+o to see all)
+
+● Update(tests\test_download_modes.py)
+  ⎿  Updated tests\test_download_modes.py with 18 additions        
+       165            worker = DownloadWorker(**worker_deps)
+       166            worker.downloader = mock_downloader
+       167    
+       168 +          # Create actual temp files for mock to return
+       169 +          audio_file = temp_dir / "test.m4a"
+       170 +          transcript_file = temp_dir / "test.en.srt"
+       171 +          audio_file.write_text("mock audio content")
+       172 +          transcript_file.write_text("mock transcript 
+           + content")
+       173 +  
+       174 +          # Update mock to return actual file paths
+       175 +          mock_downloader.download.return_value = 
+           + DownloadResult(
+       176 +              video_info=VideoInfo(
+       177 +                  title="Test Video",
+       178 +                  author="Test Author",
+       179 +                  duration=60,
+       180 +                  channel_id="UC123456",
+       181 +              ),
+       182 +              audio_path=audio_file,
+       183 +              transcript_path=transcript_file,
+       184 +          )
+       185 +  
+       186            # Create task with full mode
+       187            task = Task(
+       188                id="test-task-001",
+
+● Update(tests\test_download_modes.py)
+  ⎿  Updated tests\test_download_modes.py with 16 additions        
+       218            worker = DownloadWorker(**worker_deps)
+       219            worker.downloader = mock_downloader
+       220    
+       221 +          # Create actual temp file for mock to return
+       222 +          audio_file = temp_dir / "test2.m4a"
+       223 +          audio_file.write_text("mock audio content")
+       224 +  
+       225 +          # Update mock to return actual file path (no 
+           + transcript)
+       226 +          mock_downloader.download.return_value = 
+           + DownloadResult(
+       227 +              video_info=VideoInfo(
+       228 +                  title="Test Video",
+       229 +                  author="Test Author",
+       230 +                  duration=60,
+       231 +                  channel_id="UC123456",
+       232 +              ),
+       233 +              audio_path=audio_file,
+       234 +              transcript_path=None,
+       235 +          )
+       236 +  
+       237            task = Task(
+       238                id="test-task-002",
+       239                video_id="audio123456",
+
+● Read(tests\test_download_modes.py)
+  ⎿  Read 50 lines
+
+● Update(tests\test_download_modes.py)
+  ⎿  Updated tests\test_download_modes.py with 16 additions              
+       301            worker = DownloadWorker(**worker_deps)
+       302            worker.downloader = mock_downloader_no_transcript
+       303    
+       304 +          # Create actual temp file for fallback audio 
+           + download
+       305 +          audio_file = temp_dir / "test4.m4a"
+       306 +          audio_file.write_text("mock audio content")
+       307 +  
+       308 +          # Update mock download to return actual file path
+       309 +          mock_downloader_no_transcript.download.return_value
+           +  = DownloadResult(
+       310 +              video_info=VideoInfo(
+       311 +                  title="Test Video No Subs",
+       312 +                  author="Test Author",
+       313 +                  duration=60,
+       314 +                  channel_id="UC123456",
+       315 +              ),
+       316 +              audio_path=audio_file,
+       317 +              transcript_path=None,
+       318 +          )
+       319 +  
+       320            task = Task(
+       321                id="test-task-004",
+       322                video_id="nosubs12345",
+
+● Bash(python -m pytest tests/test_download_modes.py -v --tb=short 2>&1)
+  ⎿ ============================= test session starts =====================
+    ========
+    platform win32 -- Python 3.11.7, pytest-8.4.2, pluggy-1.5.0 -- C:\Users
+    … +64 lines (ctrl+o to expand)
+
+
+
+● 所有 16 个测试全部通过！
+
+● 测试结果
+
+  16 passed, 2 warnings in 1.53s
+
+  测试覆盖的场景
+
+  | 测试类别     | 测试数量 | 说明                                           |
+  |--------------|----------|------------------------------------------------|
+  | 请求参数验证 | 5        | 验证各种 include_audio/include_transcript 组合 |
+  | 任务服务     | 3        | 验证不同模式下任务创建和响应                   |
+  | Worker 执行  | 4        | 验证各种执行模式和 fallback 逻辑               |
+  | 数据库持久化 | 2        | 验证模式配置和结果信息的存储                   |
+  | 响应格式     | 2        | 验证 request 和 result 字段正确返回            |
+
+  关键测试点
+
+  1. 参数验证
+    - 默认模式两个都为 true
+    - 允许仅音频、仅字幕模式
+    - 拒绝两个都为 false 的请求
+  2. Worker 执行逻辑
+    - full 模式：调用 download()，获取音频+字幕
+    - audio_only 模式：调用 download()，不获取字幕
+    - transcript_only 有字幕：调用 extract_transcript_only()，不下载音频
+    - transcript_only 无字幕：先调用 extract_transcript_only()，再 fallback 调用 download()
+  3. 数据持久化
+    - 任务的 include_audio/include_transcript 正确保存
+    - 完成后的 has_transcript/audio_fallback 正确保存
+
+  运行命令：
+  python -m pytest tests/test_download_modes.py -v
+
+> 基于上方的更改提交一份 git commit 
+
+● Bash(git status)
+  ⎿  On branch main                                    
+     Your branch is ahead of 'origin/main' by 1 commit.
+       (use "git push" to publish your local commits)
+     … +18 lines (ctrl+o to expand)
+
+● Bash(git diff --stat)
+  ⎿  README.md                    | 100 ++++++++++++++++++++++++++++-      
+     src/api/schemas.py           |  42 ++++++++++++-
+     src/core/downloader.py       | 147 +++++++++++++++++++++++++++++++++++
+    … +8 lines (ctrl+o to expand)
+
+
+● Bash(git log -3 --oneline)
+  ⎿  c1dbac4 feat: 优化 PO Token 配置，增加详细日志和文档
+     aca492c 优化所有企微通知：添加 emoji 和更丰富的信息
+     df6a1f9 为企微通知添加 emoji 提升可读性
+
+● Bash(git add README.md src/api/schemas.py src/core/downloader.py
+      src/core/worker.py src/db/database.py src/db/models.py
+      src/services/task_service.py tests/conftest.p…)
+  ⎿  [main 8fbe7fa] feat: 支持灵活的下载模式（仅音频/仅字幕/完整模式）
+      9 files changed, 1003 insertions(+), 66 deletions(-)
+      create mode 100644 tests/test_download_modes.py
+
+● Bash(git status && git log -1 --stat)
+  ⎿  On branch main                                     
+     Your branch is ahead of 'origin/main' by 2 commits.
+       (use "git push" to publish your local commits)
+     … +41 lines (ctrl+o to expand)
+
+● 提交完成！
+
+  commit 8fbe7fa feat: 支持灵活的下载模式（仅音频/仅字幕/完整模式）
+
+   9 files changed, 1003 insertions(+), 66 deletions(-)
+
+  修改的文件：
+  | 文件                         | 改动              |
+  |------------------------------|-------------------|
+  | src/api/schemas.py           | +42 行            |
+  | src/db/models.py             | +8 行             |
+  | src/db/database.py           | +38 行            |
+  | src/services/task_service.py | +68 行            |
+  | src/core/downloader.py       | +147 行           |
+  | src/core/worker.py           | +144 行           |
+  | tests/conftest.py            | +50 行            |
+  | tests/test_download_modes.py | +472 行（新文件） |
+  | README.md                    | +100 行           |
+
+  当前分支领先 origin/main 2 个提交，如需推送可执行 git push。
+
+
+

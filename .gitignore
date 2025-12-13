@@ -47,7 +47,6 @@ data/
 
 # Cookies
 cookies/
-*.txt
 
 # Logs
 logs/
