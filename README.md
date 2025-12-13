@@ -199,6 +199,87 @@ TASK_INTERVAL_MAX=10
 FILE_RETENTION_DAYS=1
 ```
 
+## PO Token 配置
+
+YouTube 使用 PO (Proof of Origin) Token 来验证请求来源。本项目集成了 `bgutil-ytdlp-pot-provider` 来自动获取 PO Token。
+
+### 工作原理
+
+```
+┌─────────────┐    请求 PO Token    ┌─────────────────┐
+│   yt-dlp    │ ──────────────────> │  bgutil HTTP    │
+│  (下载器)   │ <────────────────── │  (POT Provider) │
+└─────────────┘    返回 Token       └─────────────────┘
+                                            │
+                                            v
+                                    ┌───────────────┐
+                                    │   YouTube     │
+                                    │   BotGuard    │
+                                    └───────────────┘
+```
+
+### 配置方式
+
+#### 方式一：仅 PO Token Provider（当前默认）
+
+无需额外配置，系统会自动通过 `POT_SERVER_URL` 获取 PO Token。
+
+```bash
+# .env
+POT_SERVER_URL=http://localhost:4416  # 开发环境
+POT_SERVER_URL=http://pot-provider:4416  # Docker 生产环境
+```
+
+#### 方式二：Cookies + PO Token（推荐）
+
+使用 Cookies 可以大幅提高下载成功率：
+
+```bash
+# 1. 导出 YouTube Cookies
+yt-dlp --cookies-from-browser chrome --cookies cookies.txt "https://www.youtube.com"
+
+# 2. 配置环境变量
+COOKIE_FILE=./cookies.txt
+```
+
+### 配置逻辑
+
+| 场景 | Cookies | PO Token 请求 | 成功率 |
+|------|---------|---------------|--------|
+| 有 Cookies | 是 | 按需自动 | 高 |
+| 无 Cookies | 否 | 强制请求 | 中 |
+
+### 本地开发 POT Provider
+
+开发环境需要单独启动 POT Provider 服务：
+
+```bash
+# 使用 Docker 启动 bgutil POT Provider
+docker run -d -p 4416:4416 brainicism/bgutil-ytdlp-pot-provider
+
+# 验证服务
+curl http://localhost:4416/ping
+```
+
+### 常见问题
+
+**Q: 日志显示 "Sign in to confirm you're not a bot"**
+
+A: 这表示 YouTube 检测到自动化请求。解决方案：
+1. 确保 POT Provider 服务正常运行
+2. 配置有效的 Cookies 文件
+3. 降低下载频率（增大 `TASK_INTERVAL_MIN/MAX`）
+
+**Q: PO Token 请求失败**
+
+A: 检查 POT Provider 服务：
+```bash
+# 测试 POT Provider
+curl -X POST http://localhost:4416/get_pot \
+  -H "Content-Type: application/json" \
+  -d '{"client": "web", "video_id": "dQw4w9WgXcQ"}'
+```
+
 ## 项目结构
 
 ```

@@ -6,6 +6,7 @@ Subtitles are fetched separately via TikHub API to avoid YouTube rate limiting.
 """
 
 import asyncio
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -16,6 +17,68 @@ from src.config import Settings
 from src.db.models import ErrorCode, VideoInfo
 from src.services.tikhub_service import TikHubService
 from src.utils.logger import logger
+
+
+class YtDlpLogger:
+    """
+    自定义 yt-dlp 日志适配器。
+
+    捕获 yt-dlp 的所有日志输出，特别关注 PO Token 相关的信息。
+    将日志转发到应用的 loguru logger。
+    """
+
+    # PO Token 相关的关键词模式
+    POT_PATTERNS = [
+        r"\[pot\]",
+        r"\[pot:",
+        r"po\s*token",
+        r"potoken",
+        r"bgutil",
+        r"botguard",
+        r"attestation",
+        r"content.?binding",
+        r"LOGIN_REQUIRED",
+        r"player.*response.*status",
+        r"player_client",
+    ]
+
+    def __init__(self) -> None:
+        """初始化日志适配器。"""
+        self._pot_pattern = re.compile(
+            "|".join(self.POT_PATTERNS), re.IGNORECASE
+        )
+
+    def _is_pot_related(self, msg: str) -> bool:
+        """检查消息是否与 PO Token 相关。"""
+        return bool(self._pot_pattern.search(msg))
+
+    def debug(self, msg: str) -> None:
+        """处理 debug 级别日志。"""
+        if self._is_pot_related(msg):
+            logger.info(f"[yt-dlp:POT] {msg}")
+        else:
+            logger.debug(f"[yt-dlp] {msg}")
+
+    def info(self, msg: str) -> None:
+        """处理 info 级别日志。"""
+        if self._is_pot_related(msg):
+            logger.info(f"[yt-dlp:POT] {msg}")
+        else:
+            logger.info(f"[yt-dlp] {msg}")
+
+    def warning(self, msg: str) -> None:
+        """处理 warning 级别日志。"""
+        if self._is_pot_related(msg):
+            logger.warning(f"[yt-dlp:POT] {msg}")
+        else:
+            logger.warning(f"[yt-dlp] {msg}")
+
+    def error(self, msg: str) -> None:
+        """处理 error 级别日志。"""
+        if self._is_pot_related(msg):
+            logger.error(f"[yt-dlp:POT] {msg}")
+        else:
+            logger.error(f"[yt-dlp] {msg}")
 
 
 @dataclass
@@ -62,8 +125,12 @@ class YouTubeDownloader:
             settings: Application settings.
         """
         self.settings = settings
+        self._ytdlp_logger = YtDlpLogger()
         self._base_opts = self._build_base_opts()
         self._tikhub_service = TikHubService(settings)
+        logger.info(
+            f"YouTubeDownloader initialized with POT server: {settings.pot_server_url}"
+        )
 
     def _build_base_opts(self) -> dict[str, Any]:
         """
@@ -91,9 +158,10 @@ class YouTubeDownloader:
             "no_color": True,
             # Disable unnecessary features
             "writethumbnail": False,
-            # Logging
-            "quiet": not self.settings.debug,
-            "verbose": self.settings.debug,
+            # Logging - 使用自定义 logger 捕获 PO Token 相关日志
+            "quiet": False,  # 不静默，让日志输出到我们的 logger
+            "verbose": True,  # 开启详细日志以捕获 POT 信息
+            "logger": self._ytdlp_logger,  # 自定义日志适配器
             # Progress hooks will be added per download
             "progress_hooks": [],
         }
@@ -109,11 +177,21 @@ class YouTubeDownloader:
                 opts["cookiefile"] = str(cookie_path)
                 logger.info(f"Using cookie file: {cookie_path}")
 
-        # PO Token Provider configuration
-        # 配置 YouTube player client 和 PO Token provider
-        # extractor_args 值必须是字符串列表格式
+        # PO Token Provider 配置
+        #
+        # 工程最佳实践：
+        # - 有 Cookies 时：YouTube 验证宽松，PO Token 作为备用
+        # - 无 Cookies 时：必须用 webpage_skip=player_response 强制请求 PO Token
+        #
+        # player_client=web: 使用 web 客户端（支持 PO Token，recommended=True）
+        youtube_args = ["player_client=web"]
+
+        # 无 Cookies 时，必须强制请求 PO Token
+        if not self.settings.cookie_file:
+            youtube_args.append("webpage_skip=player_response")
+
         opts["extractor_args"] = {
-            "youtube": ["player_client=mweb"],
+            "youtube": youtube_args,
             "youtubepot-bgutilhttp": [f"base_url={self.settings.pot_server_url}"],
         }
 
@@ -121,6 +199,13 @@ class YouTubeDownloader:
         # 这允许 deno 下载所需的 npm 包来解决 YouTube 的 JS 挑战
         # 格式必须是 set，包含 "ejs:github" 或 "ejs:npm"
         opts["remote_components"] = {"ejs:github"}
+
+        # 记录 PO Token 配置信息
+        logger.debug(
+            f"[POT Config] youtube_args={youtube_args}, "
+            f"pot_server={self.settings.pot_server_url}, "
+            f"cookie_file={self.settings.cookie_file or 'None'}"
+        )
 
         return opts
 
@@ -296,9 +381,15 @@ class YouTubeDownloader:
         Returns:
             _AudioDownloadResult with video info, audio path, and raw info for subtitle fetch.
         """
+        logger.info(f"[POT] Starting download for: {video_url}")
+        logger.debug(
+            f"[POT] yt-dlp extractor_args: {opts.get('extractor_args', {})}"
+        )
+
         with yt_dlp.YoutubeDL(opts) as ydl:
             # 第一步：提取视频信息（唯一的页面请求）
             logger.debug("Extracting video info (single page request)...")
+            logger.info("[POT] Calling extract_info - PO Token should be requested here if needed")
             info = ydl.extract_info(video_url, download=False)
 
             if not info:
@@ -309,6 +400,13 @@ class YouTubeDownloader:
             video_id = info["id"]
             video_info = self._extract_video_info(info)
             logger.debug(f"Extracted video info: {video_info}")
+
+            # 记录视频格式信息（可以看出是否成功获取了播放 URL）
+            formats = info.get("formats", [])
+            logger.info(
+                f"[POT] Video {video_id}: found {len(formats)} formats, "
+                f"title='{info.get('title', 'N/A')[:50]}'"
+            )
 
             # 第二步：下载音频（复用 info，不再请求页面）
             logger.debug("Downloading audio (reusing info)...")
