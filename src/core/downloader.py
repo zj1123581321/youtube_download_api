@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 import yt_dlp
+from yt_dlp.networking.impersonate import ImpersonateTarget
 
 from src.config import Settings
 from src.db.models import ErrorCode, VideoInfo
@@ -147,9 +148,9 @@ class YouTubeDownloader:
         self._ytdlp_logger = YtDlpLogger()
         self._base_opts = self._build_base_opts()
         self._tikhub_service = TikHubService(settings)
-        logger.info(
-            f"YouTubeDownloader initialized with POT server: {settings.pot_server_url}"
-        )
+
+        # 输出风控绕过配置状态
+        self._log_anti_bot_config()
 
     def _build_base_opts(self) -> dict[str, Any]:
         """
@@ -165,7 +166,8 @@ class YouTubeDownloader:
             # TLS 指纹模拟 - 使用 curl_cffi 模拟 Chrome 浏览器
             # 自动使用最新版本（当前为 chrome136），避免被 YouTube 识别为 bot
             # 参考: https://curl-cffi.readthedocs.io/en/latest/impersonate/targets.html
-            "impersonate": "chrome",
+            # 注意: Python API 需要使用 ImpersonateTarget 对象，而非字符串
+            "impersonate": ImpersonateTarget.from_str("chrome"),
             # Subtitle configuration
             # 禁用 yt-dlp 字幕下载，字幕通过 TikHub API 获取（避免 429 错误）
             # 但仍然需要获取字幕信息（URL）用于 TikHub API
@@ -253,6 +255,51 @@ class YouTubeDownloader:
 
         return opts
 
+    def _log_anti_bot_config(self) -> None:
+        """
+        输出风控绕过配置状态日志。
+
+        在初始化时调用，明确显示 TLS、Cookie、PO Token 三者的配置状态。
+        """
+        # TLS 指纹模拟状态
+        impersonate_target = self._base_opts.get("impersonate")
+        if impersonate_target:
+            tls_status = f"✓ Enabled (target={impersonate_target})"
+        else:
+            tls_status = "✗ Disabled"
+
+        # Cookie 状态
+        cookie_file = self._base_opts.get("cookiefile")
+        if cookie_file:
+            cookie_path = Path(cookie_file)
+            if cookie_path.exists():
+                cookie_status = f"✓ Loaded ({cookie_file})"
+            else:
+                cookie_status = f"✗ File not found ({cookie_file})"
+        else:
+            cookie_status = "✗ Not configured"
+
+        # PO Token Provider 状态
+        extractor_args = self._base_opts.get("extractor_args", {})
+        pot_config = extractor_args.get("youtubepot-bgutilhttp", {})
+        pot_base_url = pot_config.get("base_url", [None])[0]
+        if pot_base_url:
+            pot_status = f"✓ Configured ({pot_base_url})"
+        else:
+            pot_status = "✗ Not configured"
+
+        # Player Client 策略
+        youtube_args = extractor_args.get("youtube", {})
+        player_clients = youtube_args.get("player_client", [])
+
+        logger.info("=" * 60)
+        logger.info("Anti-Bot Configuration Status:")
+        logger.info(f"  TLS Impersonate : {tls_status}")
+        logger.info(f"  Cookie File     : {cookie_status}")
+        logger.info(f"  PO Token Server : {pot_status}")
+        logger.info(f"  Player Clients  : {player_clients}")
+        logger.info("=" * 60)
+
     async def download(
         self,
         video_url: str,
@@ -317,8 +364,13 @@ class YouTubeDownloader:
             raise DownloadError(error_code, message) from e
 
         except Exception as e:
-            logger.error(f"Unexpected download error: {e}")
-            raise DownloadError(ErrorCode.DOWNLOAD_FAILED, str(e)) from e
+            # 捕获详细的异常信息用于调试
+            import traceback
+            error_msg = str(e) or repr(e) or type(e).__name__
+            logger.error(f"Unexpected download error: {error_msg}")
+            logger.error(f"Exception type: {type(e).__name__}")
+            logger.error(f"Traceback:\n{traceback.format_exc()}")
+            raise DownloadError(ErrorCode.DOWNLOAD_FAILED, error_msg) from e
 
     async def _fetch_subtitle_via_tikhub(
         self,
