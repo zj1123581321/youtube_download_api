@@ -3,9 +3,12 @@ FROM alpine:3.19 AS ffmpeg-downloader
 
 RUN apk add --no-cache curl tar xz
 
-# Download ffmpeg static build from BtbN
+# Download ffmpeg LGPL static build from BtbN (smaller than GPL version)
 # https://github.com/BtbN/FFmpeg-Builds
-RUN curl -L "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz" \
+# LGPL version is sufficient for audio transcoding (m4a/AAC)
+# GPL version (~386MB) vs LGPL version (~140MB)
+RUN curl -L --retry 3 --retry-delay 5 --retry-connrefused \
+    "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-lgpl.tar.xz" \
     -o /tmp/ffmpeg.tar.xz && \
     mkdir -p /tmp/ffmpeg && \
     tar -xf /tmp/ffmpeg.tar.xz -C /tmp/ffmpeg --strip-components=1 && \
