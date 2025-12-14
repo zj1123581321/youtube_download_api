@@ -68,6 +68,21 @@ class YtDlpLogger:
         # 网络请求相关
         r"Using \w+RH",
         r"fetching.*player",
+        # Player Client 选择相关 - 捕获客户端切换原因
+        r"tv_embedded",
+        r"web_creator",
+        r"ios",
+        r"android",
+        r"mweb",
+        r"Extracting.*client",
+        r"nsig",
+        r"signature",
+        r"n\s*parameter",
+        r"Skipping.*client",
+        r"Falling.*back",
+        r"unavailable",
+        r"UNPLAYABLE",
+        r"playability",
     ]
 
     def __init__(self) -> None:
@@ -753,6 +768,10 @@ class YouTubeDownloader:
                 f"title='{info.get('title', 'N/A')[:50]}'"
             )
 
+            # 解析并输出实际使用的 Player Client
+            actual_client = self._detect_player_client(formats)
+            logger.info(f"[ANTI-BOT] Actual player client used: {actual_client}")
+
             # 第二步：下载音频（复用 info，不再请求页面）
             logger.debug("Downloading audio (reusing info)...")
             ydl.process_video_result(info, download=True)
@@ -774,6 +793,51 @@ class YouTubeDownloader:
             video_id=video_id,
             raw_info=info,
         )
+
+    def _detect_player_client(self, formats: list[dict[str, Any]]) -> str:
+        """
+        从格式列表中检测实际使用的 Player Client。
+
+        通过分析格式 URL 中的 `c=` 参数来确定实际使用的客户端。
+
+        Args:
+            formats: yt-dlp 格式列表。
+
+        Returns:
+            检测到的客户端名称，如 "tv_embedded", "web_creator" 等。
+        """
+        # YouTube URL 中的客户端标识映射
+        client_map = {
+            "TVHTML5_SIMPLY_EMBEDDED_PLAYER": "tv_embedded",
+            "TVHTML5": "tv",
+            "WEB_CREATOR": "web_creator",
+            "WEB": "web",
+            "IOS": "ios",
+            "ANDROID": "android",
+            "MWEB": "mweb",
+        }
+
+        detected_clients = set()
+
+        for fmt in formats:
+            url = fmt.get("url", "")
+            # 从 URL 中提取 c= 参数
+            if "&c=" in url:
+                try:
+                    # 提取 c= 参数值
+                    c_start = url.index("&c=") + 3
+                    c_end = url.index("&", c_start) if "&" in url[c_start:] else len(url)
+                    client_code = url[c_start:c_end]
+
+                    # 映射到友好名称
+                    client_name = client_map.get(client_code, client_code)
+                    detected_clients.add(client_name)
+                except (ValueError, IndexError):
+                    pass
+
+        if detected_clients:
+            return ", ".join(sorted(detected_clients))
+        return "unknown"
 
     def _extract_video_info(self, info: dict[str, Any]) -> VideoInfo:
         """
