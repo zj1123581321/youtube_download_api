@@ -91,6 +91,13 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     await task_service.restore_pending_tasks()
 
     # Start background worker
+    # TODO: 未来支持多 Worker 并发时，根据 settings.download_concurrency 启动多个 worker
+    # 示例实现：
+    # worker_tasks = [
+    #     asyncio.create_task(DownloadWorker(...).start())
+    #     for _ in range(settings.download_concurrency)
+    # ]
+    # 注意：多 worker 需要共享同一个 task_queue，并考虑风控风险
     worker_task = asyncio.create_task(download_worker.start())
 
     # Setup scheduler for periodic tasks

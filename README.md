@@ -444,9 +444,9 @@ def verify_signature(body: bytes, signature: str, secret: str) -> bool:
 | `DEBUG` | 否 | false | 调试模式 |
 | `POT_SERVER_URL` | 否 | http://pot-provider:4416 | PO Token 服务地址 |
 | `HTTP_PROXY` | 否 | - | HTTP 代理（开发环境） |
-| `DOWNLOAD_CONCURRENCY` | 否 | 1 | 下载并发数 |
-| `TASK_INTERVAL_MIN` | 否 | 30 | 任务最小间隔（秒） |
-| `TASK_INTERVAL_MAX` | 否 | 120 | 任务最大间隔（秒） |
+| `DOWNLOAD_CONCURRENCY` | 否 | 1 | 下载并发数（预留，暂未实现） |
+| `TASK_INTERVAL_MIN` | 否 | 60 | 任务最小间隔（秒） |
+| `TASK_INTERVAL_MAX` | 否 | 600 | 任务最大间隔（秒） |
 | `AUDIO_QUALITY` | 否 | 128 | 音频比特率 (kbps) |
 | `DATA_DIR` | 否 | ./data | 数据存储目录 |
 | `FILE_RETENTION_DAYS` | 否 | 60 | 文件保留天数 |
@@ -464,8 +464,8 @@ HTTP_PROXY=http://127.0.0.1:7890
 HTTPS_PROXY=http://127.0.0.1:7890
 WECOM_WEBHOOK_URL=
 
-TASK_INTERVAL_MIN=5
-TASK_INTERVAL_MAX=10
+TASK_INTERVAL_MIN=10
+TASK_INTERVAL_MAX=30
 FILE_RETENTION_DAYS=1
 ```
 

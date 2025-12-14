@@ -49,14 +49,18 @@ class Settings(BaseSettings):
     https_proxy: Optional[str] = Field(default=None, description="HTTPS proxy URL")
 
     # ============ Download Configuration ============
+    # TODO: 多 Worker 并发下载功能预留
+    # 当前系统只启动单个 DownloadWorker，此配置暂未生效
+    # 未来实现时需要在 main.py 中根据此值启动多个 worker
+    # 注意：增加并发可能会提高 YouTube 风控风险
     download_concurrency: int = Field(
-        default=1, ge=1, le=5, description="Number of concurrent downloads"
+        default=1, ge=1, le=5, description="Number of concurrent downloads (reserved, not yet implemented)"
     )
     task_interval_min: int = Field(
-        default=30, ge=5, description="Minimum interval between tasks (seconds)"
+        default=60, ge=5, description="Minimum interval between tasks (seconds)"
     )
     task_interval_max: int = Field(
-        default=120, ge=10, description="Maximum interval between tasks (seconds)"
+        default=600, ge=10, description="Maximum interval between tasks (seconds)"
     )
     audio_quality: int = Field(
         default=128, ge=64, le=320, description="Audio bitrate (kbps)"
