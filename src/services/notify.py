@@ -136,18 +136,22 @@ class NotificationService:
                 else:
                     description = desc
 
-            # 构建文件下载链接
+            # 构建文件下载链接（带后缀）
             base_url = self.settings.base_url.rstrip("/")
-            audio_url = (
-                f"{base_url}/api/v1/files/{task.audio_file_id}"
-                if task.audio_file_id
-                else "N/A"
-            )
-            transcript_url = (
-                f"{base_url}/api/v1/files/{task.transcript_file_id}"
-                if task.transcript_file_id
-                else "无字幕"
-            )
+            audio_url = "N/A"
+            transcript_url = "无字幕"
+
+            if task.audio_file_id and self.db:
+                audio_file = await self.db.get_file(task.audio_file_id)
+                if audio_file:
+                    audio_ext = audio_file.format or "m4a"
+                    audio_url = f"{base_url}/api/v1/files/{task.audio_file_id}.{audio_ext}"
+
+            if task.transcript_file_id and self.db:
+                transcript_file = await self.db.get_file(task.transcript_file_id)
+                if transcript_file:
+                    transcript_ext = transcript_file.format or "srt"
+                    transcript_url = f"{base_url}/api/v1/files/{task.transcript_file_id}.{transcript_ext}"
 
             content = f"""# ✅ Download Completed
 
