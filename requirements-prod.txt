@@ -3,8 +3,8 @@ fastapi>=0.104.0
 uvicorn[standard]>=0.24.0
 
 # Download Core
-yt-dlp>=2025.05.22
-curl_cffi>=0.6.0
+# curl-cffi extras enables TLS fingerprint impersonation
+yt-dlp[default,curl-cffi]>=2025.05.22
 bgutil-ytdlp-pot-provider
 
 # Database

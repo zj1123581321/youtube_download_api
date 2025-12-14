@@ -162,6 +162,10 @@ class YouTubeDownloader:
             # Format selection: audio only, prefer m4a 128kbps
             "format": f"bestaudio[ext=m4a][abr<={self.settings.audio_quality}]/bestaudio[ext=m4a]/bestaudio",
             "extract_flat": False,
+            # TLS 指纹模拟 - 使用 curl_cffi 模拟 Chrome 浏览器
+            # 自动使用最新版本（当前为 chrome136），避免被 YouTube 识别为 bot
+            # 参考: https://curl-cffi.readthedocs.io/en/latest/impersonate/targets.html
+            "impersonate": "chrome",
             # Subtitle configuration
             # 禁用 yt-dlp 字幕下载，字幕通过 TikHub API 获取（避免 429 错误）
             # 但仍然需要获取字幕信息（URL）用于 TikHub API
@@ -208,21 +212,22 @@ class YouTubeDownloader:
         # 导致常规 HTTP 格式不可用 (yt-dlp#12482)。
         #
         # 客户端选择策略：
-        # - 有 Cookies: web_creator 优先（支持 cookies + PO Token，成功率高）
-        # - 无 Cookies: ios 优先（不需要认证，速度快）
+        # - tv_embedded 优先：嵌入式电视客户端，限制较少，兼容性好
+        # - web_creator 备选：支持 cookies + PO Token
+        # - ios 备选：不需要认证，速度快
         #
         # player_js_version=actual: 使用实际的 player.js 版本而非缓存版本
         # 这有助于解决 YouTube 更新 player.js 后的兼容性问题
         if self.settings.cookie_file:
-            # 有 cookies 时，使用支持 cookies 的客户端
+            # 有 cookies 时，tv_embedded 优先，web_creator 备选
             youtube_args = {
-                "player_client": ["web_creator"],
+                "player_client": ["tv_embedded", "web_creator"],
                 "player_js_version": ["actual"],
             }
         else:
-            # 无 cookies 时，ios 不需要认证，更快；web_creator 作为备选
+            # 无 cookies 时，tv_embedded 优先，ios 和 web_creator 备选
             youtube_args = {
-                "player_client": ["ios", "web_creator"],
+                "player_client": ["tv_embedded", "ios", "web_creator"],
                 "player_js_version": ["actual"],
             }
 
