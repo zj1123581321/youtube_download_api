@@ -559,22 +559,31 @@ X-Timestamp: 1702357425
   "video_info": {
     "title": "Video Title",
     "author": "Channel Name",
-    "duration": 213
+    "channel_id": "UCxxxxxxxxxxxxxx",
+    "duration": 213,
+    "description": "Video description...",
+    "upload_date": "20251201",
+    "view_count": 1000000,
+    "thumbnail": "https://i.ytimg.com/vi/dQw4w9WgXcQ/maxresdefault.jpg"
   },
   "files": {
     "audio": {
       "url": "/api/v1/files/abc123.m4a",
       "size": 3456789,
-      "format": "m4a"
+      "format": "m4a",
+      "bitrate": 128,
+      "language": null
     },
     "transcript": {
       "url": "/api/v1/files/def456.srt",
       "size": 12345,
       "format": "srt",
+      "bitrate": null,
       "language": "en"
     }
   },
-  "expires_at": "2025-02-10T10:00:00+08:00"
+  "error": null,
+  "expires_at": "2025-02-10T10:00:00Z"
 }
 ```
 
@@ -684,7 +693,79 @@ if __name__ == "__main__":
 
 ---
 
-## 8. 注意事项
+## 8. 响应字段说明
+
+### 8.1 TaskResponse 完整字段
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `task_id` | string/null | 任务 ID，缓存命中时为 null |
+| `status` | string | 任务状态：pending/downloading/completed/failed/cancelled |
+| `video_id` | string | YouTube 视频 ID |
+| `video_url` | string | 原始视频 URL |
+| `video_info` | object/null | 视频元信息（见下表） |
+| `files` | object/null | 文件信息（见下表） |
+| `error` | object/null | 错误信息，成功时为 null |
+| `cache_hit` | boolean | 是否命中缓存 |
+| `request` | object | 请求模式（include_audio, include_transcript） |
+| `result` | object/null | 结果详情（见下表） |
+| `position` | int/null | 队列位置（pending 状态） |
+| `estimated_wait` | int/null | 预计等待时间（秒） |
+| `progress` | int/null | 下载进度 0-100（downloading 状态） |
+| `created_at` | datetime | 任务创建时间 |
+| `started_at` | datetime/null | 开始下载时间 |
+| `completed_at` | datetime/null | 完成时间 |
+| `expires_at` | datetime/null | 文件过期时间 |
+| `message` | string/null | 附加消息（如 "Resources retrieved from cache"） |
+
+### 8.2 video_info 字段
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `title` | string | 视频标题 |
+| `author` | string | 频道名称 |
+| `channel_id` | string | 频道 ID |
+| `duration` | int | 视频时长（秒） |
+| `description` | string | 视频描述 |
+| `upload_date` | string | 上传日期（YYYYMMDD 格式） |
+| `view_count` | int | 观看次数 |
+| `thumbnail` | string | 缩略图 URL |
+
+### 8.3 files 字段
+
+```json
+{
+  "audio": {
+    "url": "/api/v1/files/{file_id}.m4a",
+    "size": 3456789,
+    "format": "m4a",
+    "bitrate": 128,
+    "language": null
+  },
+  "transcript": {
+    "url": "/api/v1/files/{file_id}.srt",
+    "size": 12345,
+    "format": "srt",
+    "bitrate": null,
+    "language": "en"
+  }
+}
+```
+
+**注意**：`audio.language` 和 `transcript.bitrate` 字段始终存在但值为 null。
+
+### 8.4 result 字段
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `has_transcript` | boolean | 视频是否有可用字幕 |
+| `audio_fallback` | boolean | 是否因无字幕而回退到下载音频 |
+| `reused_audio` | boolean | 音频是否来自缓存 |
+| `reused_transcript` | boolean | 字幕是否来自缓存 |
+
+---
+
+## 9. 注意事项
 
 1. **API Key 安全**: 不要将 API Key 硬编码或提交到代码仓库
 2. **文件过期**: 下载的文件 60 天后会自动清理，请及时下载保存

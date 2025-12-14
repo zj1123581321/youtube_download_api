@@ -150,16 +150,26 @@ curl -X POST http://localhost:8000/api/v1/tasks \
 ```json
 {
   "task_id": "550e8400-e29b-41d4-a716-446655440000",
-  "cache_hit": false,
   "status": "pending",
   "video_id": "dQw4w9WgXcQ",
+  "video_url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+  "video_info": null,
+  "files": null,
+  "error": null,
+  "cache_hit": false,
   "request": {
     "include_audio": true,
     "include_transcript": true
   },
+  "result": null,
   "position": 3,
   "estimated_wait": 180,
-  "created_at": "2025-12-12T10:00:00+08:00"
+  "progress": null,
+  "created_at": "2025-12-12T10:00:00Z",
+  "started_at": null,
+  "completed_at": null,
+  "expires_at": null,
+  "message": null
 }
 ```
 
@@ -175,9 +185,37 @@ curl http://localhost:8000/api/v1/tasks/{task_id} \
 ```json
 {
   "task_id": "550e8400-e29b-41d4-a716-446655440000",
-  "cache_hit": false,
   "status": "completed",
   "video_id": "dQw4w9WgXcQ",
+  "video_url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+  "video_info": {
+    "title": "Rick Astley - Never Gonna Give You Up",
+    "author": "Rick Astley",
+    "channel_id": "UCuAXFkgsw1L7xaCfnd5JJOw",
+    "duration": 213,
+    "description": "Official music video...",
+    "upload_date": "20091025",
+    "view_count": 1500000000,
+    "thumbnail": "https://i.ytimg.com/vi/dQw4w9WgXcQ/maxresdefault.jpg"
+  },
+  "files": {
+    "audio": {
+      "url": "/api/v1/files/abc123.m4a",
+      "size": 3456789,
+      "format": "m4a",
+      "bitrate": 128,
+      "language": null
+    },
+    "transcript": {
+      "url": "/api/v1/files/def456.srt",
+      "size": 12345,
+      "format": "srt",
+      "bitrate": null,
+      "language": "en"
+    }
+  },
+  "error": null,
+  "cache_hit": false,
   "request": {
     "include_audio": true,
     "include_transcript": true
@@ -188,25 +226,14 @@ curl http://localhost:8000/api/v1/tasks/{task_id} \
     "reused_audio": false,
     "reused_transcript": false
   },
-  "video_info": {
-    "title": "Rick Astley - Never Gonna Give You Up",
-    "author": "Rick Astley",
-    "duration": 213
-  },
-  "files": {
-    "audio": {
-      "url": "/api/v1/files/abc123.m4a",
-      "size": 3456789,
-      "format": "m4a",
-      "bitrate": 128
-    },
-    "transcript": {
-      "url": "/api/v1/files/abc123.srt",
-      "size": 12345,
-      "language": "en"
-    }
-  },
-  "expires_at": "2025-02-10T10:00:00+08:00"
+  "position": null,
+  "estimated_wait": null,
+  "progress": null,
+  "created_at": "2025-12-12T10:00:00Z",
+  "started_at": "2025-12-12T10:00:05Z",
+  "completed_at": "2025-12-12T10:01:30Z",
+  "expires_at": "2025-02-10T10:01:30Z",
+  "message": null
 }
 ```
 
@@ -214,9 +241,31 @@ curl http://localhost:8000/api/v1/tasks/{task_id} \
 ```json
 {
   "task_id": "550e8400-e29b-41d4-a716-446655440000",
-  "cache_hit": false,
   "status": "completed",
   "video_id": "dQw4w9WgXcQ",
+  "video_url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+  "video_info": {
+    "title": "Rick Astley - Never Gonna Give You Up",
+    "author": "Rick Astley",
+    "channel_id": "UCuAXFkgsw1L7xaCfnd5JJOw",
+    "duration": 213,
+    "description": "Official music video...",
+    "upload_date": "20091025",
+    "view_count": 1500000000,
+    "thumbnail": "https://i.ytimg.com/vi/dQw4w9WgXcQ/maxresdefault.jpg"
+  },
+  "files": {
+    "audio": null,
+    "transcript": {
+      "url": "/api/v1/files/def456.srt",
+      "size": 12345,
+      "format": "srt",
+      "bitrate": null,
+      "language": "en"
+    }
+  },
+  "error": null,
+  "cache_hit": false,
   "request": {
     "include_audio": false,
     "include_transcript": true
@@ -227,20 +276,14 @@ curl http://localhost:8000/api/v1/tasks/{task_id} \
     "reused_audio": false,
     "reused_transcript": false
   },
-  "video_info": {
-    "title": "Rick Astley - Never Gonna Give You Up",
-    "author": "Rick Astley",
-    "duration": 213
-  },
-  "files": {
-    "audio": null,
-    "transcript": {
-      "url": "/api/v1/files/abc123.srt",
-      "size": 12345,
-      "language": "en"
-    }
-  },
-  "expires_at": "2025-02-10T10:00:00+08:00"
+  "position": null,
+  "estimated_wait": null,
+  "progress": null,
+  "created_at": "2025-12-12T10:00:00Z",
+  "started_at": "2025-12-12T10:00:05Z",
+  "completed_at": "2025-12-12T10:00:10Z",
+  "expires_at": "2025-02-10T10:00:10Z",
+  "message": null
 }
 ```
 
@@ -248,9 +291,31 @@ curl http://localhost:8000/api/v1/tasks/{task_id} \
 ```json
 {
   "task_id": "550e8400-e29b-41d4-a716-446655440000",
-  "cache_hit": false,
   "status": "completed",
   "video_id": "dQw4w9WgXcQ",
+  "video_url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+  "video_info": {
+    "title": "Rick Astley - Never Gonna Give You Up",
+    "author": "Rick Astley",
+    "channel_id": "UCuAXFkgsw1L7xaCfnd5JJOw",
+    "duration": 213,
+    "description": "Official music video...",
+    "upload_date": "20091025",
+    "view_count": 1500000000,
+    "thumbnail": "https://i.ytimg.com/vi/dQw4w9WgXcQ/maxresdefault.jpg"
+  },
+  "files": {
+    "audio": {
+      "url": "/api/v1/files/abc123.m4a",
+      "size": 3456789,
+      "format": "m4a",
+      "bitrate": 128,
+      "language": null
+    },
+    "transcript": null
+  },
+  "error": null,
+  "cache_hit": false,
   "request": {
     "include_audio": false,
     "include_transcript": true
@@ -261,21 +326,14 @@ curl http://localhost:8000/api/v1/tasks/{task_id} \
     "reused_audio": false,
     "reused_transcript": false
   },
-  "video_info": {
-    "title": "Rick Astley - Never Gonna Give You Up",
-    "author": "Rick Astley",
-    "duration": 213
-  },
-  "files": {
-    "audio": {
-      "url": "/api/v1/files/abc123.m4a",
-      "size": 3456789,
-      "format": "m4a",
-      "bitrate": 128
-    },
-    "transcript": null
-  },
-  "expires_at": "2025-02-10T10:00:00+08:00"
+  "position": null,
+  "estimated_wait": null,
+  "progress": null,
+  "created_at": "2025-12-12T10:00:00Z",
+  "started_at": "2025-12-12T10:00:05Z",
+  "completed_at": "2025-12-12T10:01:30Z",
+  "expires_at": "2025-02-10T10:01:30Z",
+  "message": null
 }
 ```
 
@@ -283,10 +341,37 @@ curl http://localhost:8000/api/v1/tasks/{task_id} \
 ```json
 {
   "task_id": null,
-  "cache_hit": true,
   "status": "completed",
   "video_id": "dQw4w9WgXcQ",
-  "message": "Resources retrieved from cache",
+  "video_url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+  "video_info": {
+    "title": "Rick Astley - Never Gonna Give You Up",
+    "author": "Rick Astley",
+    "channel_id": "UCuAXFkgsw1L7xaCfnd5JJOw",
+    "duration": 213,
+    "description": "Official music video...",
+    "upload_date": "20091025",
+    "view_count": 1500000000,
+    "thumbnail": "https://i.ytimg.com/vi/dQw4w9WgXcQ/maxresdefault.jpg"
+  },
+  "files": {
+    "audio": {
+      "url": "/api/v1/files/abc123.m4a",
+      "size": 3456789,
+      "format": "m4a",
+      "bitrate": 128,
+      "language": null
+    },
+    "transcript": {
+      "url": "/api/v1/files/def456.srt",
+      "size": 12345,
+      "format": "srt",
+      "bitrate": null,
+      "language": "en"
+    }
+  },
+  "error": null,
+  "cache_hit": true,
   "request": {
     "include_audio": true,
     "include_transcript": true
@@ -297,25 +382,14 @@ curl http://localhost:8000/api/v1/tasks/{task_id} \
     "reused_audio": true,
     "reused_transcript": true
   },
-  "video_info": {
-    "title": "Rick Astley - Never Gonna Give You Up",
-    "author": "Rick Astley",
-    "duration": 213
-  },
-  "files": {
-    "audio": {
-      "url": "/api/v1/files/abc123",
-      "size": 3456789,
-      "format": "m4a",
-      "bitrate": 128
-    },
-    "transcript": {
-      "url": "/api/v1/files/def456",
-      "size": 12345,
-      "language": "en"
-    }
-  },
-  "expires_at": "2025-02-10T10:00:00+08:00"
+  "position": null,
+  "estimated_wait": null,
+  "progress": null,
+  "created_at": "2025-12-12T10:00:00Z",
+  "started_at": null,
+  "completed_at": "2025-12-12T10:00:00Z",
+  "expires_at": "2025-02-10T10:00:00Z",
+  "message": "Resources retrieved from cache"
 }
 ```
 
