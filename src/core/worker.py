@@ -13,6 +13,7 @@ from typing import Optional
 
 from src.config import Settings
 from src.core.downloader import (
+    DownloadCancelledError,
     DownloadError,
     DownloadResult,
     TranscriptOnlyResult,
@@ -92,12 +93,31 @@ class DownloadWorker:
         logger.info("Download worker stopped")
 
     async def stop(self) -> None:
-        """Stop the worker loop."""
+        """
+        Stop the worker loop and cancel any ongoing download.
+
+        This method:
+        1. Sets _running = False to stop the main loop
+        2. Calls downloader.cancel() to interrupt any active download
+        """
         self._running = False
         logger.info("Stopping download worker...")
 
+        # 触发下载取消，使正在进行的下载尽快结束
+        self.downloader.cancel()
+        logger.info("Download cancellation signal sent")
+
     async def _process_next_task(self) -> None:
-        """Process the next task from the queue."""
+        """
+        Process the next task from the queue.
+
+        Handles cancellation gracefully - if cancelled during download,
+        the task is reset to pending status for retry on next startup.
+        """
+        # 检查是否已停止
+        if not self._running:
+            return
+
         task = await self.task_service.get_next_task()
 
         if not task:
@@ -106,6 +126,9 @@ class DownloadWorker:
 
         self._current_task = task
         logger.info(f"Processing task: {task.id} ({task.video_id})")
+
+        # 重置取消标志，为新任务准备
+        self.downloader.reset_cancel()
 
         try:
             await self.db.update_task_status(task.id, TaskStatus.DOWNLOADING)
@@ -132,10 +155,23 @@ class DownloadWorker:
                 if task_updated.callback_url:
                     await self.callback_service.send_callback(task_updated)
 
+        except DownloadCancelledError:
+            # 下载被取消（通常是因为 Ctrl+C）
+            # 将任务状态重置为 pending，下次启动时会自动恢复
+            logger.warning(f"Task {task.id} cancelled due to shutdown")
+            await self.db.update_task_status(task.id, TaskStatus.PENDING)
+            # 不等待，直接返回以加快关闭速度
+            return
+
         except DownloadError as e:
             await self._handle_download_error(task, e)
 
         except Exception as e:
+            # 如果是因为取消导致的异常，按取消处理
+            if self.downloader.is_cancelled:
+                logger.warning(f"Task {task.id} cancelled due to shutdown (exception)")
+                await self.db.update_task_status(task.id, TaskStatus.PENDING)
+                return
             logger.error(f"Unexpected error processing task {task.id}: {e}")
             await self._handle_download_error(
                 task, DownloadError(ErrorCode.INTERNAL_ERROR, str(e))
@@ -143,6 +179,10 @@ class DownloadWorker:
 
         finally:
             self._current_task = None
+
+            # 如果已停止，不等待直接返回
+            if not self._running:
+                return
 
             wait_time = random.uniform(
                 self.settings.task_interval_min,

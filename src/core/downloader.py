@@ -3,10 +3,13 @@ YouTube downloader module using yt-dlp.
 
 Handles audio downloads with error handling and retry logic.
 Subtitles are fetched separately via TikHub API to avoid YouTube rate limiting.
+
+Supports graceful cancellation via threading.Event for responsive Ctrl+C handling.
 """
 
 import asyncio
 import re
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -18,6 +21,17 @@ from src.config import Settings
 from src.db.models import ErrorCode, VideoInfo
 from src.services.tikhub_service import TikHubService
 from src.utils.logger import logger
+
+
+class DownloadCancelledError(Exception):
+    """
+    Exception raised when download is cancelled by user.
+
+    This is raised in progress hooks when cancel_event is set,
+    allowing immediate interruption of yt-dlp operations.
+    """
+
+    pass
 
 
 class YtDlpLogger:
@@ -135,6 +149,8 @@ class YouTubeDownloader:
 
     Wraps yt-dlp with configuration for audio-only downloads,
     subtitle extraction, and YouTube anti-bot measures.
+
+    Supports graceful cancellation via cancel() method for responsive shutdown.
     """
 
     def __init__(self, settings: Settings):
@@ -149,8 +165,35 @@ class YouTubeDownloader:
         self._base_opts = self._build_base_opts()
         self._tikhub_service = TikHubService(settings)
 
+        # 取消机制：使用 threading.Event 实现跨线程取消
+        # 在 progress_hook 中检查此标志，实现下载阶段的快速取消
+        self._cancel_event = threading.Event()
+
         # 输出风控绕过配置状态
         self._log_anti_bot_config()
+
+    def cancel(self) -> None:
+        """
+        Request cancellation of ongoing download.
+
+        Sets the cancel event which will be checked in progress hooks.
+        Safe to call from any thread (typically from asyncio event loop).
+        """
+        logger.info("Download cancellation requested")
+        self._cancel_event.set()
+
+    def reset_cancel(self) -> None:
+        """
+        Reset cancellation state for new download.
+
+        Must be called before starting a new download if cancel() was previously called.
+        """
+        self._cancel_event.clear()
+
+    @property
+    def is_cancelled(self) -> bool:
+        """Check if cancellation has been requested."""
+        return self._cancel_event.is_set()
 
     def _build_base_opts(self) -> dict[str, Any]:
         """
@@ -312,6 +355,9 @@ class YouTubeDownloader:
         Audio is downloaded using yt-dlp, while subtitles are fetched separately
         via TikHub API to avoid YouTube's 429 rate limiting.
 
+        Supports cancellation via cancel() method - when called, the download
+        will be interrupted at the next progress update.
+
         Args:
             video_url: YouTube video URL.
             output_dir: Directory to save downloaded files.
@@ -322,11 +368,17 @@ class YouTubeDownloader:
 
         Raises:
             DownloadError: If audio download fails.
+            DownloadCancelledError: If download is cancelled via cancel().
             Note: Subtitle fetch failures do NOT raise errors, only log warnings.
         """
         if self.settings.dry_run:
             logger.info(f"Dry run: would download {video_url}")
             return self._create_dry_run_result(output_dir)
+
+        # 检查是否在开始前就已被取消
+        if self._cancel_event.is_set():
+            logger.info("Download cancelled before start")
+            raise DownloadCancelledError("Download cancelled before start")
 
         # Ensure output directory exists
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -340,6 +392,11 @@ class YouTubeDownloader:
             audio_result = await loop.run_in_executor(
                 None, self._do_download, video_url, opts, output_dir
             )
+
+            # 下载完成后再次检查取消标志
+            if self._cancel_event.is_set():
+                logger.info("Download cancelled after audio download")
+                raise DownloadCancelledError("Download cancelled after audio download")
 
             # Step 2: Fetch subtitle via TikHub API (non-blocking, failure doesn't affect audio)
             transcript_path = await self._fetch_subtitle_via_tikhub(
@@ -358,12 +415,24 @@ class YouTubeDownloader:
                 transcript_path=transcript_path,
             )
 
+        except DownloadCancelledError:
+            # 直接重新抛出取消异常，不做包装
+            raise
+
         except yt_dlp.utils.DownloadError as e:
+            # 检查是否是因为取消导致的错误
+            if self._cancel_event.is_set():
+                logger.info("Download cancelled (detected via yt-dlp error)")
+                raise DownloadCancelledError("Download cancelled") from e
             error_code, message = self._map_ytdlp_error(e)
             logger.error(f"Download failed: {error_code.value} - {message}")
             raise DownloadError(error_code, message) from e
 
         except Exception as e:
+            # 检查是否是因为取消导致的错误
+            if self._cancel_event.is_set():
+                logger.info("Download cancelled (detected via exception)")
+                raise DownloadCancelledError("Download cancelled") from e
             # 捕获详细的异常信息用于调试
             import traceback
             error_msg = str(e) or repr(e) or type(e).__name__
@@ -426,6 +495,8 @@ class YouTubeDownloader:
         This is used for transcript_only mode where client only wants subtitles.
         If subtitles are available, they are fetched via TikHub API.
 
+        Supports cancellation via cancel() method.
+
         Args:
             video_url: YouTube video URL.
             output_dir: Directory to save subtitle file.
@@ -435,6 +506,7 @@ class YouTubeDownloader:
 
         Raises:
             DownloadError: If video info extraction fails.
+            DownloadCancelledError: If extraction is cancelled via cancel().
         """
         if self.settings.dry_run:
             logger.info(f"Dry run: would extract transcript for {video_url}")
@@ -448,6 +520,11 @@ class YouTubeDownloader:
                 transcript_path=output_dir / "test.en.srt",
             )
 
+        # 检查是否在开始前就已被取消
+        if self._cancel_event.is_set():
+            logger.info("Transcript extraction cancelled before start")
+            raise DownloadCancelledError("Extraction cancelled before start")
+
         # Ensure output directory exists
         output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -457,6 +534,11 @@ class YouTubeDownloader:
             info_result = await loop.run_in_executor(
                 None, self._extract_info_only, video_url
             )
+
+            # 检查取消标志
+            if self._cancel_event.is_set():
+                logger.info("Transcript extraction cancelled after info extraction")
+                raise DownloadCancelledError("Extraction cancelled after info extraction")
 
             if not info_result.has_subtitle:
                 logger.info(
@@ -485,12 +567,24 @@ class YouTubeDownloader:
                 transcript_path=transcript_path,
             )
 
+        except DownloadCancelledError:
+            # 直接重新抛出取消异常
+            raise
+
         except yt_dlp.utils.DownloadError as e:
+            # 检查是否是因为取消导致的错误
+            if self._cancel_event.is_set():
+                logger.info("Extraction cancelled (detected via yt-dlp error)")
+                raise DownloadCancelledError("Extraction cancelled") from e
             error_code, message = self._map_ytdlp_error(e)
             logger.error(f"Info extraction failed: {error_code.value} - {message}")
             raise DownloadError(error_code, message) from e
 
         except Exception as e:
+            # 检查是否是因为取消导致的错误
+            if self._cancel_event.is_set():
+                logger.info("Extraction cancelled (detected via exception)")
+                raise DownloadCancelledError("Extraction cancelled") from e
             logger.error(f"Unexpected error during info extraction: {e}")
             raise DownloadError(ErrorCode.DOWNLOAD_FAILED, str(e)) from e
 
@@ -549,6 +643,9 @@ class YouTubeDownloader:
         """
         Build download-specific options.
 
+        Includes a cancel-check hook that raises DownloadCancelledError
+        when cancel_event is set, enabling responsive Ctrl+C handling.
+
         Args:
             output_dir: Output directory.
             progress_callback: Progress callback function.
@@ -566,10 +663,23 @@ class YouTubeDownloader:
             },
         }
 
-        # Add progress hook if callback provided
-        if progress_callback:
+        # 取消事件引用，用于闭包
+        cancel_event = self._cancel_event
 
-            def progress_hook(d: dict[str, Any]) -> None:
+        def progress_hook(d: dict[str, Any]) -> None:
+            """
+            Progress hook with cancellation support.
+
+            Checks cancel_event on every progress update, raises
+            DownloadCancelledError if cancellation is requested.
+            """
+            # 首先检查取消标志 - 这是实现快速响应 Ctrl+C 的关键
+            if cancel_event.is_set():
+                logger.info("Cancellation detected in progress hook, aborting download")
+                raise DownloadCancelledError("Download cancelled by user")
+
+            # 然后处理进度更新
+            if progress_callback:
                 if d["status"] == "downloading":
                     total = d.get("total_bytes") or d.get("total_bytes_estimate", 0)
                     downloaded = d.get("downloaded_bytes", 0)
@@ -579,7 +689,7 @@ class YouTubeDownloader:
                 elif d["status"] == "finished":
                     progress_callback(100)
 
-            opts["progress_hooks"] = [progress_hook]
+        opts["progress_hooks"] = [progress_hook]
 
         return opts
 

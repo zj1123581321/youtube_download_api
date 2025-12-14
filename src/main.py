@@ -128,18 +128,32 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # Shutdown
     logger.info("Shutting down...")
 
+    # 关闭超时设置（秒）
+    # 给下载任务足够时间响应取消信号，但不要无限等待
+    SHUTDOWN_TIMEOUT = 5.0
+
     # Stop scheduler
     if scheduler:
         scheduler.shutdown()
 
-    # Stop worker
+    # Stop worker - 这会触发 downloader.cancel()
     if download_worker:
         await download_worker.stop()
 
+    # 等待 worker task 结束，但设置超时
     if worker_task:
         worker_task.cancel()
         try:
-            await worker_task
+            # 使用 wait_for 设置超时，避免无限等待
+            await asyncio.wait_for(
+                asyncio.shield(worker_task),
+                timeout=SHUTDOWN_TIMEOUT,
+            )
+        except asyncio.TimeoutError:
+            logger.warning(
+                f"Worker task did not finish within {SHUTDOWN_TIMEOUT}s, "
+                "forcing shutdown"
+            )
         except asyncio.CancelledError:
             pass
 
