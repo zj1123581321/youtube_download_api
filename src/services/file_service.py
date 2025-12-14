@@ -67,8 +67,10 @@ class FileService:
         # Generate friendly filename: {video_id}_{sanitized_title}.{ext}
         # Fallback to video_id only if no title provided
         if video_title:
-            # Sanitize title, limit length to leave room for video_id and extension
-            safe_title = sanitize_filename(video_title, max_length=150)
+            # Calculate max bytes for title to stay under filesystem limit (255 bytes)
+            # Fixed parts: {file_id}_ (37 bytes) + {video_id}_ (12 bytes) + .{ext} (~5 bytes)
+            # Reserve ~55 bytes for fixed parts, ~200 bytes for title
+            safe_title = sanitize_filename(video_title, max_bytes=180)
             filename = f"{video_id}_{safe_title}.{file_format}"
         else:
             filename = source_path.name

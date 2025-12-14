@@ -137,3 +137,27 @@ class TestSanitizeFilename:
     def test_sanitize_filename(self, filename: str, expected: str) -> None:
         """Test filename sanitization."""
         assert sanitize_filename(filename) == expected
+
+    def test_sanitize_filename_truncates_by_bytes(self) -> None:
+        """Test that truncation works by bytes, not characters.
+
+        CJK characters use 3 bytes each in UTF-8.
+        With max_bytes=60, we should get ~20 CJK characters.
+        """
+        # 30 Chinese characters = 90 bytes in UTF-8
+        long_chinese = "中" * 30
+        result = sanitize_filename(long_chinese, max_bytes=60)
+
+        # Result should be 20 characters (60 bytes / 3 bytes per char)
+        assert len(result) == 20
+        assert len(result.encode("utf-8")) == 60
+
+    def test_sanitize_filename_mixed_content(self) -> None:
+        """Test truncation with mixed ASCII and CJK characters."""
+        # Mix of ASCII (1 byte) and Chinese (3 bytes)
+        mixed = "abc中文def"  # 3 + 6 + 3 = 12 bytes
+        result = sanitize_filename(mixed, max_bytes=9)
+
+        # Should truncate to "abc中文" (3 + 6 = 9 bytes)
+        assert result == "abc中文"
+        assert len(result.encode("utf-8")) == 9

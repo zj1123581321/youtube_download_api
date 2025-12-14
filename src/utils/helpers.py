@@ -142,13 +142,16 @@ def is_valid_youtube_url(url: str) -> bool:
     return extract_video_id(url) is not None
 
 
-def sanitize_filename(filename: str, max_length: int = 200) -> str:
+def sanitize_filename(filename: str, max_bytes: int = 200) -> str:
     """
     Sanitize filename by removing invalid characters.
 
+    Truncates by **byte count** (not character count) to comply with
+    filesystem limits (e.g., ext4 allows max 255 bytes for filename).
+
     Args:
         filename: Original filename.
-        max_length: Maximum filename length.
+        max_bytes: Maximum filename length in bytes (UTF-8 encoded).
 
     Returns:
         Sanitized filename.
@@ -160,12 +163,43 @@ def sanitize_filename(filename: str, max_length: int = 200) -> str:
     # Remove leading/trailing dots and spaces
     sanitized = sanitized.strip(". ")
 
-    # Truncate if too long
-    if len(sanitized) > max_length:
-        sanitized = sanitized[:max_length]
+    # Truncate by bytes (UTF-8), not by character count
+    # This is important for CJK characters which use 3 bytes each
+    if len(sanitized.encode("utf-8")) > max_bytes:
+        sanitized = _truncate_to_bytes(sanitized, max_bytes)
 
     # Ensure not empty
     if not sanitized:
         sanitized = "unnamed"
 
     return sanitized
+
+
+def _truncate_to_bytes(text: str, max_bytes: int) -> str:
+    """
+    Truncate string to fit within max_bytes when UTF-8 encoded.
+
+    Ensures we don't cut in the middle of a multi-byte character.
+
+    Args:
+        text: String to truncate.
+        max_bytes: Maximum byte count.
+
+    Returns:
+        Truncated string.
+    """
+    encoded = text.encode("utf-8")
+    if len(encoded) <= max_bytes:
+        return text
+
+    # Truncate bytes and decode, ignoring incomplete characters
+    truncated = encoded[:max_bytes]
+    # Find the last valid UTF-8 boundary
+    while truncated:
+        try:
+            return truncated.decode("utf-8")
+        except UnicodeDecodeError:
+            # Remove last byte and try again
+            truncated = truncated[:-1]
+
+    return ""
