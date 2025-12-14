@@ -38,12 +38,13 @@ class YtDlpLogger:
     """
     自定义 yt-dlp 日志适配器。
 
-    捕获 yt-dlp 的所有日志输出，特别关注 PO Token 相关的信息。
+    捕获 yt-dlp 的所有日志输出，特别关注风控绕过相关的信息。
     将日志转发到应用的 loguru logger。
     """
 
-    # PO Token 相关的关键词模式
-    POT_PATTERNS = [
+    # 风控绕过相关的关键词模式（这些日志会被提升为 INFO 级别）
+    ANTI_BOT_PATTERNS = [
+        # PO Token 相关
         r"\[pot\]",
         r"\[pot:",
         r"po\s*token",
@@ -55,43 +56,55 @@ class YtDlpLogger:
         r"LOGIN_REQUIRED",
         r"player.*response.*status",
         r"player_client",
+        # Cookie 相关 - 捕获实际加载日志
+        r"cookie",
+        r"Netscape",
+        r"Loaded \d+",
+        # TLS/Impersonate 相关 - 捕获 request handler 使用日志
+        r"impersonate",
+        r"curl.?cffi",
+        r"CurlCFFIRH",
+        r"Request.*Handler",
+        # 网络请求相关
+        r"Using \w+RH",
+        r"fetching.*player",
     ]
 
     def __init__(self) -> None:
         """初始化日志适配器。"""
-        self._pot_pattern = re.compile(
-            "|".join(self.POT_PATTERNS), re.IGNORECASE
+        self._anti_bot_pattern = re.compile(
+            "|".join(self.ANTI_BOT_PATTERNS), re.IGNORECASE
         )
 
-    def _is_pot_related(self, msg: str) -> bool:
-        """检查消息是否与 PO Token 相关。"""
-        return bool(self._pot_pattern.search(msg))
+    def _is_anti_bot_related(self, msg: str) -> bool:
+        """检查消息是否与风控绕过相关。"""
+        return bool(self._anti_bot_pattern.search(msg))
 
     def debug(self, msg: str) -> None:
         """处理 debug 级别日志。"""
-        if self._is_pot_related(msg):
-            logger.info(f"[yt-dlp:POT] {msg}")
+        if self._is_anti_bot_related(msg):
+            logger.info(f"[yt-dlp:ANTI-BOT] {msg}")
         else:
             logger.debug(f"[yt-dlp] {msg}")
 
     def info(self, msg: str) -> None:
         """处理 info 级别日志。"""
-        if self._is_pot_related(msg):
-            logger.info(f"[yt-dlp:POT] {msg}")
+        if self._is_anti_bot_related(msg):
+            logger.info(f"[yt-dlp:ANTI-BOT] {msg}")
         else:
             logger.info(f"[yt-dlp] {msg}")
 
     def warning(self, msg: str) -> None:
         """处理 warning 级别日志。"""
-        if self._is_pot_related(msg):
-            logger.warning(f"[yt-dlp:POT] {msg}")
+        if self._is_anti_bot_related(msg):
+            logger.warning(f"[yt-dlp:ANTI-BOT] {msg}")
         else:
             logger.warning(f"[yt-dlp] {msg}")
 
     def error(self, msg: str) -> None:
         """处理 error 级别日志。"""
-        if self._is_pot_related(msg):
-            logger.error(f"[yt-dlp:POT] {msg}")
+        if self._is_anti_bot_related(msg):
+            logger.error(f"[yt-dlp:ANTI-BOT] {msg}")
         else:
             logger.error(f"[yt-dlp] {msg}")
 
