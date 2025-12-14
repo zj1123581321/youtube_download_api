@@ -18,6 +18,16 @@ from src.utils.helpers import get_expiry_time, sanitize_filename
 from src.utils.logger import logger
 
 
+class FileOperationError(Exception):
+    """
+    Exception raised when file operations fail.
+
+    用于标识文件操作（移动、删除等）失败的异常。
+    """
+
+    pass
+
+
 class FileService:
     """
     Service for managing downloaded files.
@@ -89,12 +99,32 @@ class FileService:
         target_path = target_dir / target_filename
         relative_path = target_path.relative_to(self.data_dir)
 
-        # Move file to storage
-        shutil.move(str(source_path), str(target_path))
-        logger.debug(f"Moved file to: {target_path}")
+        # Move file to storage with error handling
+        # 如果移动失败，不要创建数据库记录（避免孤立记录）
+        try:
+            shutil.move(str(source_path), str(target_path))
+            logger.debug(f"Moved file to: {target_path}")
+        except OSError as e:
+            logger.error(
+                f"Failed to move file from {source_path} to {target_path}: {e}"
+            )
+            raise FileOperationError(
+                f"Failed to move file to storage: {e}"
+            ) from e
 
-        # Get file size
-        file_size = target_path.stat().st_size
+        # Get file size with error handling
+        try:
+            file_size = target_path.stat().st_size
+        except OSError as e:
+            # 文件移动成功但无法获取大小，尝试清理并抛出异常
+            logger.error(f"Failed to get file size for {target_path}: {e}")
+            try:
+                target_path.unlink()
+            except OSError:
+                pass
+            raise FileOperationError(
+                f"Failed to get file size after move: {e}"
+            ) from e
 
         # Create record
         now = datetime.now(timezone.utc)
@@ -113,7 +143,19 @@ class FileService:
             expires_at=get_expiry_time(self.settings.file_retention_days),
         )
 
-        await self.db.create_file(file_record)
+        # Create database record with error handling
+        try:
+            await self.db.create_file(file_record)
+        except Exception as e:
+            # 数据库创建失败，清理已移动的文件
+            logger.error(f"Failed to create file record in database: {e}")
+            try:
+                target_path.unlink()
+                logger.info(f"Cleaned up file after database error: {target_path}")
+            except OSError as cleanup_error:
+                logger.warning(f"Failed to cleanup file {target_path}: {cleanup_error}")
+            raise
+
         logger.info(f"Created file record: {file_id} ({file_type.value}) for video {video_id}")
 
         return file_record

@@ -61,18 +61,33 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # Ensure directories exist
     settings.ensure_directories()
 
-    # Initialize database
+    # Initialize database with error handling
+    # 数据库是关键组件，连接失败应该阻止应用启动
     db = Database(settings.db_path)
-    await db.connect()
+    try:
+        await db.connect()
+        logger.info("Database connected successfully")
+    except Exception as e:
+        logger.critical(f"Failed to connect to database: {e}")
+        raise RuntimeError(f"Database initialization failed: {e}") from e
 
-    # Reset any interrupted downloads
-    await db.reset_downloading_tasks()
+    # Reset any interrupted downloads with error handling
+    try:
+        await db.reset_downloading_tasks()
+    except Exception as e:
+        logger.error(f"Failed to reset downloading tasks: {e}")
+        # 非关键操作，继续启动但记录错误
 
-    # Initialize services
-    file_service = FileService(db, settings)
-    task_service = TaskService(db, settings, file_service)
-    callback_service = CallbackService(db, file_service)
-    notify_service = NotificationService(settings, db)
+    # Initialize services with error handling
+    try:
+        file_service = FileService(db, settings)
+        task_service = TaskService(db, settings, file_service)
+        callback_service = CallbackService(db, file_service)
+        notify_service = NotificationService(settings, db)
+    except Exception as e:
+        logger.critical(f"Failed to initialize services: {e}")
+        await db.disconnect()
+        raise RuntimeError(f"Service initialization failed: {e}") from e
 
     # Set services for API routes
     set_services(task_service, file_service)
@@ -148,19 +163,22 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         await download_worker.stop()
 
     # 等待 worker task 结束，但设置超时
+    # 注意：worker.stop() 已经设置了取消标志，worker 会自行停止
+    # 这里只是等待它完成，不需要再次 cancel
     if worker_task:
-        worker_task.cancel()
         try:
-            # 使用 wait_for 设置超时，避免无限等待
-            await asyncio.wait_for(
-                asyncio.shield(worker_task),
-                timeout=SHUTDOWN_TIMEOUT,
-            )
+            # 等待 worker 任务完成，设置超时避免无限等待
+            await asyncio.wait_for(worker_task, timeout=SHUTDOWN_TIMEOUT)
         except asyncio.TimeoutError:
             logger.warning(
                 f"Worker task did not finish within {SHUTDOWN_TIMEOUT}s, "
-                "forcing shutdown"
+                "forcing cancellation"
             )
+            worker_task.cancel()
+            try:
+                await worker_task
+            except asyncio.CancelledError:
+                pass
         except asyncio.CancelledError:
             pass
 

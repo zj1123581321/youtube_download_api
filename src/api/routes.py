@@ -4,8 +4,10 @@ API routes module.
 Defines all REST API endpoints for the YouTube Audio API.
 """
 
+import asyncio
 from typing import Annotated, Optional
 
+import aiosqlite
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import FileResponse
 
@@ -19,7 +21,7 @@ from src.api.schemas import (
     TaskResponse,
 )
 from src.db.models import TaskStatus
-from src.services.file_service import FileService
+from src.services.file_service import FileService, FileOperationError
 from src.services.task_service import TaskService
 from src.utils.logger import logger
 
@@ -105,6 +107,24 @@ async def create_task(
 
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    except asyncio.TimeoutError:
+        logger.error("Task creation timed out")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Service temporarily unavailable, please try again later",
+        )
+    except aiosqlite.Error as e:
+        logger.error(f"Database error during task creation: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Database error, please try again later",
+        )
+    except Exception as e:
+        logger.error(f"Unexpected error during task creation: {type(e).__name__}: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Internal server error",
+        )
 
 
 @router.get(
@@ -127,11 +147,24 @@ async def list_tasks(
     offset: int = Query(0, ge=0, description="Number of results to skip"),
 ) -> TaskListResponse:
     """List tasks with pagination."""
-    return await task_service.list_tasks(
-        status=status_filter,
-        limit=limit,
-        offset=offset,
-    )
+    try:
+        return await task_service.list_tasks(
+            status=status_filter,
+            limit=limit,
+            offset=offset,
+        )
+    except aiosqlite.Error as e:
+        logger.error(f"Database error during task listing: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Database error, please try again later",
+        )
+    except Exception as e:
+        logger.error(f"Unexpected error during task listing: {type(e).__name__}: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Internal server error",
+        )
 
 
 @router.get(
@@ -151,15 +184,30 @@ async def get_task(
     task_service: TaskServiceDep,
 ) -> TaskResponse:
     """Get task by ID."""
-    response = await task_service.get_task(task_id)
+    try:
+        response = await task_service.get_task(task_id)
 
-    if not response:
+        if not response:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Task not found",
+            )
+
+        return response
+    except HTTPException:
+        raise
+    except aiosqlite.Error as e:
+        logger.error(f"Database error during task retrieval: {e}")
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Task not found",
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Database error, please try again later",
         )
-
-    return response
+    except Exception as e:
+        logger.error(f"Unexpected error during task retrieval: {type(e).__name__}: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Internal server error",
+        )
 
 
 @router.delete(
@@ -189,6 +237,13 @@ async def cancel_task(
                 detail="Task not found",
             )
 
+        # task_id 在取消操作中不应为 None
+        if response.task_id is None:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Invalid response: task_id is None",
+            )
+
         return CancelTaskResponse(
             task_id=response.task_id,
             status=response.status,
@@ -197,6 +252,20 @@ async def cancel_task(
 
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    except HTTPException:
+        raise
+    except aiosqlite.Error as e:
+        logger.error(f"Database error during task cancellation: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Database error, please try again later",
+        )
+    except Exception as e:
+        logger.error(f"Unexpected error during task cancellation: {type(e).__name__}: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Internal server error",
+        )
 
 
 # ==================== File Endpoints ====================
@@ -226,34 +295,55 @@ async def download_file(
     This endpoint is public (no API key required) but uses UUID file IDs
     to prevent enumeration attacks.
     """
-    # Extract file_id from path (strip extension if present)
-    # UUID format: 8-4-4-4-12 = 36 characters
-    if len(file_id_with_ext) > 36 and "." in file_id_with_ext[36:]:
-        file_id = file_id_with_ext[:36]
-    else:
-        file_id = file_id_with_ext.split(".")[0] if "." in file_id_with_ext else file_id_with_ext
+    try:
+        # Extract file_id from path (strip extension if present)
+        # UUID format: 8-4-4-4-12 = 36 characters
+        if len(file_id_with_ext) > 36 and "." in file_id_with_ext[36:]:
+            file_id = file_id_with_ext[:36]
+        else:
+            file_id = file_id_with_ext.split(".")[0] if "." in file_id_with_ext else file_id_with_ext
 
-    result = await file_service.get_file(file_id)
+        result = await file_service.get_file(file_id)
 
-    if not result:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="File not found",
+        if not result:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="File not found",
+            )
+
+        file_record, file_path = result
+
+        # Determine media type
+        media_type = "application/octet-stream"
+        if file_record.format == "m4a":
+            media_type = "audio/mp4"
+        elif file_record.format == "json3" or file_record.format == "json":
+            media_type = "application/json"
+        elif file_record.format == "webm":
+            media_type = "audio/webm"
+
+        return FileResponse(
+            path=file_path,
+            filename=file_record.filename,
+            media_type=media_type,
         )
-
-    file_record, file_path = result
-
-    # Determine media type
-    media_type = "application/octet-stream"
-    if file_record.format == "m4a":
-        media_type = "audio/mp4"
-    elif file_record.format == "json3" or file_record.format == "json":
-        media_type = "application/json"
-    elif file_record.format == "webm":
-        media_type = "audio/webm"
-
-    return FileResponse(
-        path=file_path,
-        filename=file_record.filename,
-        media_type=media_type,
-    )
+    except HTTPException:
+        raise
+    except FileOperationError as e:
+        logger.error(f"File operation error: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="File operation failed",
+        )
+    except aiosqlite.Error as e:
+        logger.error(f"Database error during file retrieval: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Database error, please try again later",
+        )
+    except Exception as e:
+        logger.error(f"Unexpected error during file download: {type(e).__name__}: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Internal server error",
+        )

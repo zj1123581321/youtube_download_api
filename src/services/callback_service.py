@@ -62,6 +62,11 @@ class CallbackService:
         """
         Send webhook callback for a completed/failed task.
 
+        区分错误类型进行智能重试：
+        - 网络错误（超时、连接失败）：可重试
+        - 5xx 服务端错误：可重试
+        - 4xx 客户端错误：不重试（配置问题）
+
         Args:
             task: Task with callback_url configured.
 
@@ -74,8 +79,12 @@ class CallbackService:
         payload = await self._build_payload(task)
         success = False
         attempts = 0
+        should_retry = True
 
         for attempt in range(self.MAX_RETRIES):
+            if not should_retry:
+                break
+
             attempts = attempt + 1
             try:
                 await self._send_request(
@@ -88,9 +97,49 @@ class CallbackService:
                 logger.info(f"Callback sent successfully for task {task.id}")
                 break
 
-            except Exception as e:
+            except httpx.TimeoutException as e:
+                # 超时错误：可重试
                 logger.warning(
-                    f"Callback attempt {attempts} failed for task {task.id}: {e}"
+                    f"Callback timeout (attempt {attempts}/{self.MAX_RETRIES}) "
+                    f"for task {task.id}: {e}"
+                )
+                if attempt < self.MAX_RETRIES - 1:
+                    await asyncio.sleep(self.RETRY_DELAYS[attempt])
+
+            except httpx.ConnectError as e:
+                # 连接错误：可重试
+                logger.warning(
+                    f"Callback connection error (attempt {attempts}/{self.MAX_RETRIES}) "
+                    f"for task {task.id}: {e}"
+                )
+                if attempt < self.MAX_RETRIES - 1:
+                    await asyncio.sleep(self.RETRY_DELAYS[attempt])
+
+            except httpx.HTTPStatusError as e:
+                # HTTP 状态错误：根据状态码决定是否重试
+                status_code = e.response.status_code
+                if 400 <= status_code < 500:
+                    # 4xx 客户端错误：不重试（配置问题）
+                    logger.error(
+                        f"Callback failed with client error {status_code} "
+                        f"for task {task.id}: {e}. Not retrying."
+                    )
+                    should_retry = False
+                else:
+                    # 5xx 服务端错误：可重试
+                    logger.warning(
+                        f"Callback server error {status_code} "
+                        f"(attempt {attempts}/{self.MAX_RETRIES}) "
+                        f"for task {task.id}: {e}"
+                    )
+                    if attempt < self.MAX_RETRIES - 1:
+                        await asyncio.sleep(self.RETRY_DELAYS[attempt])
+
+            except Exception as e:
+                # 其他未知错误：记录并重试
+                logger.warning(
+                    f"Callback unexpected error (attempt {attempts}/{self.MAX_RETRIES}) "
+                    f"for task {task.id}: {type(e).__name__}: {e}"
                 )
                 if attempt < self.MAX_RETRIES - 1:
                     await asyncio.sleep(self.RETRY_DELAYS[attempt])

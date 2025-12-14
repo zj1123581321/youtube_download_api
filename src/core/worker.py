@@ -8,6 +8,7 @@ Only downloads what's needed - reuses existing files when available.
 import asyncio
 import random
 import tempfile
+import traceback
 from pathlib import Path
 from typing import Optional
 
@@ -87,7 +88,12 @@ class DownloadWorker:
                 logger.info("Worker cancelled")
                 break
             except Exception as e:
-                logger.error(f"Worker error: {e}")
+                # 添加完整的 traceback 便于调试
+                logger.error(
+                    f"Worker error: {e}\n"
+                    f"Exception type: {type(e).__name__}\n"
+                    f"Traceback:\n{traceback.format_exc()}"
+                )
                 await asyncio.sleep(5)
 
         logger.info("Download worker stopped")
@@ -136,24 +142,14 @@ class DownloadWorker:
             # Execute task (smart download - only what's needed)
             result = await self._execute_task(task)
 
-            # Update task completion
-            await self.db.update_task_completed(
-                task_id=task.id,
-                audio_file_id=result["audio_file_id"],
-                transcript_file_id=result["transcript_file_id"],
-                reused_audio=result["reused_audio"],
-                reused_transcript=result["reused_transcript"],
-            )
+            # Update task completion with retry logic
+            # 这是关键操作，如果失败会导致任务状态不一致
+            await self._update_task_completed_with_retry(task.id, result)
 
             logger.info(f"Task {task.id} completed successfully")
 
-            # Send notifications
-            task_updated = await self.db.get_task(task.id)
-            if task_updated:
-                await self.notify_service.notify_completed(task_updated)
-
-                if task_updated.callback_url:
-                    await self.callback_service.send_callback(task_updated)
+            # Send notifications (non-critical, failure won't affect task status)
+            await self._send_notifications_safe(task)
 
         except DownloadCancelledError:
             # 下载被取消（通常是因为 Ctrl+C）
@@ -483,3 +479,86 @@ class DownloadWorker:
         if len(parts) >= 2:
             return parts[-1]
         return "unknown"
+
+    async def _update_task_completed_with_retry(
+        self,
+        task_id: str,
+        result: dict,
+        max_retries: int = 3,
+    ) -> None:
+        """
+        Update task completion with retry logic.
+
+        关键操作：如果数据库更新失败，会导致任务状态不一致。
+        使用重试机制确保状态更新成功。
+
+        Args:
+            task_id: Task ID.
+            result: Execution result dict.
+            max_retries: Maximum retry attempts.
+
+        Raises:
+            Exception: If all retries failed.
+        """
+        last_error: Optional[Exception] = None
+
+        for attempt in range(max_retries):
+            try:
+                await self.db.update_task_completed(
+                    task_id=task_id,
+                    audio_file_id=result["audio_file_id"],
+                    transcript_file_id=result["transcript_file_id"],
+                    reused_audio=result["reused_audio"],
+                    reused_transcript=result["reused_transcript"],
+                )
+                return  # 成功，直接返回
+            except Exception as e:
+                last_error = e
+                logger.warning(
+                    f"Failed to update task {task_id} completion "
+                    f"(attempt {attempt + 1}/{max_retries}): {e}"
+                )
+                if attempt < max_retries - 1:
+                    # 指数退避: 1s, 2s, 4s
+                    await asyncio.sleep(2 ** attempt)
+
+        # 所有重试都失败了，记录详细错误
+        logger.error(
+            f"All {max_retries} attempts to update task {task_id} completion failed. "
+            f"Last error: {last_error}\n"
+            f"Traceback:\n{traceback.format_exc()}"
+        )
+        raise last_error  # type: ignore[misc]
+
+    async def _send_notifications_safe(self, task: Task) -> None:
+        """
+        Send notifications safely without affecting task completion.
+
+        通知是非关键操作，失败不应影响任务状态。
+
+        Args:
+            task: Completed task.
+        """
+        try:
+            task_updated = await self.db.get_task(task.id)
+            if task_updated:
+                # 发送完成通知
+                try:
+                    await self.notify_service.notify_completed(task_updated)
+                except Exception as e:
+                    logger.error(
+                        f"Failed to send completion notification for task {task.id}: {e}"
+                    )
+
+                # 发送 webhook 回调
+                if task_updated.callback_url:
+                    try:
+                        await self.callback_service.send_callback(task_updated)
+                    except Exception as e:
+                        logger.error(
+                            f"Failed to send callback for task {task.id}: {e}"
+                        )
+        except Exception as e:
+            logger.error(
+                f"Failed to fetch task {task.id} for notifications: {e}"
+            )
