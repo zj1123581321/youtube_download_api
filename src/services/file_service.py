@@ -14,7 +14,7 @@ from uuid import uuid4
 from src.config import Settings
 from src.db.database import Database
 from src.db.models import FileRecord, FileType
-from src.utils.helpers import get_expiry_time
+from src.utils.helpers import get_expiry_time, sanitize_filename
 from src.utils.logger import logger
 
 
@@ -45,6 +45,7 @@ class FileService:
         source_path: Path,
         quality: Optional[str] = None,
         language: Optional[str] = None,
+        video_title: Optional[str] = None,
     ) -> FileRecord:
         """
         Create a file record and move file to storage.
@@ -55,13 +56,22 @@ class FileService:
             source_path: Path to source file.
             quality: Audio quality (e.g., "128").
             language: Transcript language (e.g., "en").
+            video_title: Video title for friendly filename.
 
         Returns:
             Created FileRecord.
         """
         file_id = str(uuid4())
-        filename = source_path.name
         file_format = source_path.suffix.lstrip(".")
+
+        # Generate friendly filename: {video_id}_{sanitized_title}.{ext}
+        # Fallback to video_id only if no title provided
+        if video_title:
+            # Sanitize title, limit length to leave room for video_id and extension
+            safe_title = sanitize_filename(video_title, max_length=150)
+            filename = f"{video_id}_{safe_title}.{file_format}"
+        else:
+            filename = source_path.name
 
         # Determine target directory
         if file_type == FileType.AUDIO:

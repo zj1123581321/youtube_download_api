@@ -236,8 +236,10 @@ class TaskService:
         audio_info = None
         # Include audio if requested OR if it's a fallback for missing transcript
         if audio_file and (request.include_audio or audio_fallback):
+            # Generate URL with extension for better compatibility
+            audio_ext = audio_file.format or "m4a"
             audio_info = FileInfoResponse(
-                url=f"/api/v1/files/{audio_file.id}",
+                url=f"/api/v1/files/{audio_file.id}.{audio_ext}",
                 size=audio_file.size,
                 format=audio_file.format,
                 bitrate=audio_file.quality,
@@ -245,8 +247,10 @@ class TaskService:
 
         transcript_info = None
         if transcript_file and request.include_transcript:
+            # Generate URL with extension for better compatibility
+            transcript_ext = transcript_file.format or "srt"
             transcript_info = FileInfoResponse(
-                url=f"/api/v1/files/{transcript_file.id}",
+                url=f"/api/v1/files/{transcript_file.id}.{transcript_ext}",
                 size=transcript_file.size,
                 format=transcript_file.format,
                 language=transcript_file.language,
@@ -473,8 +477,10 @@ class TaskService:
             if audio_file or transcript_file:
                 audio_info = None
                 if audio_file:
+                    # Generate URL with extension for better compatibility
+                    audio_ext = audio_file.format or "m4a"
                     audio_info = FileInfoResponse(
-                        url=f"/api/v1/files/{audio_file.id}",
+                        url=f"/api/v1/files/{audio_file.id}.{audio_ext}",
                         size=audio_file.size,
                         format=audio_file.format,
                         bitrate=audio_file.quality,
@@ -482,8 +488,10 @@ class TaskService:
 
                 transcript_info = None
                 if transcript_file:
+                    # Generate URL with extension for better compatibility
+                    transcript_ext = transcript_file.format or "srt"
                     transcript_info = FileInfoResponse(
-                        url=f"/api/v1/files/{transcript_file.id}",
+                        url=f"/api/v1/files/{transcript_file.id}.{transcript_ext}",
                         size=transcript_file.size,
                         format=transcript_file.format,
                         language=transcript_file.language,

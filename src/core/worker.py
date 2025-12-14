@@ -281,6 +281,7 @@ class DownloadWorker:
                     file_type=FileType.TRANSCRIPT,
                     source_path=transcript_result.transcript_path,
                     language=lang,
+                    video_title=transcript_result.video_info.title,
                 )
 
                 return {
@@ -366,6 +367,7 @@ class DownloadWorker:
                     file_type=FileType.AUDIO,
                     source_path=result.audio_path,
                     quality=str(self.settings.audio_quality),
+                    video_title=result.video_info.title,
                 )
                 audio_file_id = audio_file.id
                 reused_audio = False
@@ -385,6 +387,7 @@ class DownloadWorker:
                         file_type=FileType.TRANSCRIPT,
                         source_path=result.transcript_path,
                         language=lang,
+                        video_title=result.video_info.title,
                     )
                     transcript_file_id = transcript_file.id
                     reused_transcript = False

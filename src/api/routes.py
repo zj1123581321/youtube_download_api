@@ -203,24 +203,36 @@ async def cancel_task(
 
 
 @router.get(
-    "/files/{file_id}",
+    "/files/{file_id_with_ext}",
     responses={
         404: {"model": ErrorResponse, "description": "File not found"},
     },
     summary="Download file",
-    description="Download an audio or transcript file by ID. No authentication required.",
+    description="Download an audio or transcript file by ID. Supports URL with extension (e.g., /files/uuid.m4a). No authentication required.",
     tags=["Files"],
 )
 async def download_file(
-    file_id: str,
+    file_id_with_ext: str,
     file_service: FileServiceDep,
 ) -> FileResponse:
     """
     Download a file by ID.
 
+    Supports URLs with or without extension:
+    - /files/{uuid}
+    - /files/{uuid}.m4a
+    - /files/{uuid}.srt
+
     This endpoint is public (no API key required) but uses UUID file IDs
     to prevent enumeration attacks.
     """
+    # Extract file_id from path (strip extension if present)
+    # UUID format: 8-4-4-4-12 = 36 characters
+    if len(file_id_with_ext) > 36 and "." in file_id_with_ext[36:]:
+        file_id = file_id_with_ext[:36]
+    else:
+        file_id = file_id_with_ext.split(".")[0] if "." in file_id_with_ext else file_id_with_ext
+
     result = await file_service.get_file(file_id)
 
     if not result:
