@@ -76,6 +76,12 @@ class DownloadWorker:
         self._running = False
         self._current_task: Optional[Task] = None
 
+        # 自适应间隔控制
+        # interval_multiplier: 间隔倍数，限流时增大，连续成功时逐步恢复
+        # consecutive_successes: 连续成功次数，用于判断是否可以降低倍数
+        self._interval_multiplier: float = 1.0
+        self._consecutive_successes: int = 0
+
     async def start(self) -> None:
         """Start the worker loop."""
         self._running = True
@@ -113,6 +119,61 @@ class DownloadWorker:
         self.downloader.cancel()
         logger.info("Download cancellation signal sent")
 
+    def _on_task_success(self) -> None:
+        """
+        任务成功时调整自适应间隔。
+
+        连续成功 3 次后开始降低间隔倍数，逐步恢复到正常水平。
+        """
+        self._consecutive_successes += 1
+
+        # 连续成功 3 次后开始降低倍数
+        if self._consecutive_successes >= 3 and self._interval_multiplier > 1.0:
+            # 每次降低 20%，但不低于 1.0
+            self._interval_multiplier = max(1.0, self._interval_multiplier * 0.8)
+            logger.info(
+                f"Adaptive interval: multiplier decreased to {self._interval_multiplier:.2f} "
+                f"(consecutive successes: {self._consecutive_successes})"
+            )
+
+    def _on_rate_limited(self) -> None:
+        """
+        被限流时调整自适应间隔。
+
+        立即增加间隔倍数，并重置连续成功计数。
+        """
+        self._consecutive_successes = 0
+
+        # 倍数翻倍，但不超过 4.0（即最大间隔的 4 倍）
+        old_multiplier = self._interval_multiplier
+        self._interval_multiplier = min(4.0, self._interval_multiplier * 2.0)
+
+        logger.warning(
+            f"Adaptive interval: multiplier increased from {old_multiplier:.2f} "
+            f"to {self._interval_multiplier:.2f} due to rate limiting"
+        )
+
+    def _get_adaptive_wait_time(self) -> float:
+        """
+        计算自适应等待时间。
+
+        基于配置的最小/最大间隔，乘以自适应倍数。
+
+        Returns:
+            等待时间（秒）
+        """
+        base_min = self.settings.task_interval_min
+        base_max = self.settings.task_interval_max
+
+        # 应用自适应倍数
+        adjusted_min = base_min * self._interval_multiplier
+        adjusted_max = base_max * self._interval_multiplier
+
+        # 在调整后的范围内随机选择
+        wait_time = random.uniform(adjusted_min, adjusted_max)
+
+        return wait_time
+
     async def _process_next_task(self) -> None:
         """
         Process the next task from the queue.
@@ -148,6 +209,9 @@ class DownloadWorker:
 
             logger.info(f"Task {task.id} completed successfully")
 
+            # 更新自适应间隔（成功）
+            self._on_task_success()
+
             # Send notifications (non-critical, failure won't affect task status)
             await self._send_notifications_safe(task)
 
@@ -180,11 +244,15 @@ class DownloadWorker:
             if not self._running:
                 return
 
-            wait_time = random.uniform(
-                self.settings.task_interval_min,
-                self.settings.task_interval_max,
-            )
-            logger.debug(f"Waiting {wait_time:.1f}s before next task")
+            # 使用自适应间隔
+            wait_time = self._get_adaptive_wait_time()
+            if self._interval_multiplier > 1.0:
+                logger.info(
+                    f"Waiting {wait_time:.1f}s before next task "
+                    f"(multiplier: {self._interval_multiplier:.2f}x)"
+                )
+            else:
+                logger.debug(f"Waiting {wait_time:.1f}s before next task")
             await asyncio.sleep(wait_time)
 
     async def _execute_task(self, task: Task) -> dict:
@@ -428,6 +496,10 @@ class DownloadWorker:
             error: Download error.
         """
         logger.error(f"Task {task.id} failed: {error.error_code.value} - {error.message}")
+
+        # 如果是限流错误，调整自适应间隔
+        if error.error_code == ErrorCode.RATE_LIMITED:
+            self._on_rate_limited()
 
         if is_retryable_error(error.error_code):
             config = RETRY_CONFIG.get(error.error_code, {})

@@ -57,10 +57,10 @@ class Settings(BaseSettings):
         default=1, ge=1, le=5, description="Number of concurrent downloads (reserved, not yet implemented)"
     )
     task_interval_min: int = Field(
-        default=60, ge=5, description="Minimum interval between tasks (seconds)"
+        default=300, ge=5, description="Minimum interval between tasks (seconds)"
     )
     task_interval_max: int = Field(
-        default=600, ge=10, description="Maximum interval between tasks (seconds)"
+        default=1800, ge=10, description="Maximum interval between tasks (seconds)"
     )
     audio_quality: int = Field(
         default=128, ge=64, le=320, description="Audio bitrate (kbps)"

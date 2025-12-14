@@ -9,7 +9,17 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Optional
 
 from src.config import Settings
-from src.db.models import Task, VideoInfo
+from src.db.models import ErrorCode, Task, VideoInfo
+
+# 这些错误是"预期内"的视频问题，不需要 @ 所有人
+# 只有系统级错误才需要紧急通知
+EXPECTED_VIDEO_ERRORS = {
+    ErrorCode.VIDEO_UNAVAILABLE,  # 视频不存在/已删除
+    ErrorCode.VIDEO_PRIVATE,  # 私密视频
+    ErrorCode.VIDEO_REGION_BLOCKED,  # 地区限制
+    ErrorCode.VIDEO_AGE_RESTRICTED,  # 年龄限制
+    ErrorCode.VIDEO_LIVE_STREAM,  # 直播流（未开始的直播等）
+}
 from src.utils.helpers import format_duration
 from src.utils.logger import logger
 
@@ -197,7 +207,19 @@ class NotificationService:
             # 获取错误码（如果有）
             error_code = task.error_code.value if task.error_code else "UNKNOWN"
 
-            content = f"""# ❌ Download Failed
+            # 判断是否需要 @ 所有人
+            # 只有系统级错误才需要紧急通知，视频本身的问题不需要
+            should_mention_all = task.error_code not in EXPECTED_VIDEO_ERRORS
+
+            # 根据错误类型选择不同的 emoji 和标题
+            if should_mention_all:
+                title_emoji = "❌"
+                title_text = "Download Failed"
+            else:
+                title_emoji = "⚠️"
+                title_text = "Download Skipped"
+
+            content = f"""# {title_emoji} {title_text}
 
 🎬 **Video**: {title}
 🔗 **Video URL**: {task.video_url}
@@ -211,7 +233,7 @@ class NotificationService:
             self.notifier.send_markdown(
                 webhook_url=self.webhook_url,
                 content=content,
-                mention_all=True,  # @all on failure
+                mention_all=should_mention_all,
             )
             logger.debug(f"Failure notification sent for task {task.id}")
 
