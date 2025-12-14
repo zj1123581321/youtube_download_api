@@ -563,14 +563,14 @@ X-Timestamp: 1702357425
   },
   "files": {
     "audio": {
-      "url": "http://server/api/v1/files/abc123",
+      "url": "/api/v1/files/abc123.m4a",
       "size": 3456789,
       "format": "m4a"
     },
     "transcript": {
-      "url": "http://server/api/v1/files/def456",
+      "url": "/api/v1/files/def456.srt",
       "size": 12345,
-      "format": "json",
+      "format": "srt",
       "language": "en"
     }
   },
@@ -691,4 +691,5 @@ if __name__ == "__main__":
 3. **并发限制**: 服务端默认单并发，批量任务会排队处理
 4. **缓存命中**: 缓存命中时 `task_id` 为 `null`，不会触发 Webhook
 5. **错误重试**: 可重试错误（网络、限流等）服务端会自动重试 3 次
-6. **文件下载**: `/api/v1/files/{file_id}` 是公开接口，无需 API Key
+6. **文件下载**: `/api/v1/files/{file_id}.{ext}` 是公开接口，无需 API Key
+7. **文件命名**: 下载的文件名格式为 `{video_id}_{视频标题}.{ext}`，方便识别内容
