@@ -5,8 +5,9 @@ Handles sending notifications to WeCom (Enterprise WeChat) webhook.
 """
 
 import socket
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Optional
+from zoneinfo import ZoneInfo
 
 from src.config import Settings
 from src.db.models import ErrorCode, Task, VideoInfo
@@ -64,6 +65,47 @@ class NotificationService:
         if not self.enabled:
             logger.info("WeCom notifications disabled")
 
+    def _format_local_time(self, dt: Optional[datetime]) -> str:
+        """
+        Format datetime to local timezone string.
+
+        Args:
+            dt: Datetime object (may be naive or aware).
+
+        Returns:
+            Formatted string in configured timezone.
+        """
+        if dt is None:
+            return "N/A"
+
+        try:
+            tz: timezone | ZoneInfo = ZoneInfo(self.settings.tz)
+        except Exception:
+            # Fallback to UTC if timezone is invalid
+            tz = timezone.utc
+
+        # If datetime is naive, assume it's UTC
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+
+        # Convert to local timezone
+        local_dt = dt.astimezone(tz)
+        return local_dt.strftime("%Y-%m-%d %H:%M:%S")
+
+    def _get_local_now(self) -> str:
+        """
+        Get current time in local timezone.
+
+        Returns:
+            Formatted current time string.
+        """
+        try:
+            tz: timezone | ZoneInfo = ZoneInfo(self.settings.tz)
+        except Exception:
+            tz = timezone.utc
+
+        return datetime.now(tz).strftime("%Y-%m-%d %H:%M:%S")
+
     async def notify_startup(self, version: str) -> None:
         """
         Send system startup notification.
@@ -82,7 +124,7 @@ class NotificationService:
 
 🖥️ **Host**: {hostname} ({ip})
 📦 **Version**: {version}
-🕐 **Time**: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+🕐 **Time**: {self._get_local_now()}
 
 ⚙️ **Configuration**:
 > 📊 Concurrency: {self.settings.download_concurrency}
@@ -163,17 +205,9 @@ class NotificationService:
                     transcript_ext = transcript_file.format or "srt"
                     transcript_url = f"{base_url}/api/v1/files/{task.transcript_file_id}.{transcript_ext}"
 
-            # 格式化时间信息
-            created_time = (
-                task.created_at.strftime("%Y-%m-%d %H:%M:%S")
-                if task.created_at
-                else "N/A"
-            )
-            started_time = (
-                task.started_at.strftime("%Y-%m-%d %H:%M:%S")
-                if task.started_at
-                else "N/A"
-            )
+            # 格式化时间信息（转换为本地时区）
+            created_time = self._format_local_time(task.created_at)
+            started_time = self._format_local_time(task.started_at)
             wait_time = (
                 format_timedelta(task.started_at - task.created_at)
                 if task.created_at and task.started_at
@@ -240,17 +274,9 @@ class NotificationService:
                 title_emoji = "⚠️"
                 title_text = "Download Skipped"
 
-            # 格式化时间信息
-            created_time = (
-                task.created_at.strftime("%Y-%m-%d %H:%M:%S")
-                if task.created_at
-                else "N/A"
-            )
-            started_time = (
-                task.started_at.strftime("%Y-%m-%d %H:%M:%S")
-                if task.started_at
-                else "N/A"
-            )
+            # 格式化时间信息（转换为本地时区）
+            created_time = self._format_local_time(task.created_at)
+            started_time = self._format_local_time(task.started_at)
             wait_time = (
                 format_timedelta(task.started_at - task.created_at)
                 if task.created_at and task.started_at
