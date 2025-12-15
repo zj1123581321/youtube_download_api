@@ -439,6 +439,9 @@ def verify_signature(body: bytes, signature: str, secret: str) -> bool:
 |------|------|--------|------|
 | `API_KEY` | 是 | - | API 鉴权密钥 |
 | `WECOM_WEBHOOK_URL` | 否 | - | 企业微信 Webhook URL |
+| `WECOM_MODERATION_ENABLED` | 否 | false | 启用敏感词审核 |
+| `WECOM_MODERATION_URLS` | 否 | - | 敏感词库 URL 列表（逗号分隔） |
+| `WECOM_MODERATION_STRATEGY` | 否 | pinyin_reverse | 审核策略：block/replace/pinyin_reverse |
 | `HOST` | 否 | 0.0.0.0 | 服务监听地址 |
 | `PORT` | 否 | 8000 | 服务监听端口 |
 | `DEBUG` | 否 | false | 调试模式 |
@@ -467,6 +470,39 @@ WECOM_WEBHOOK_URL=
 TASK_INTERVAL_MIN=10
 TASK_INTERVAL_MAX=30
 FILE_RETENTION_DAYS=1
+```
+
+### 敏感词审核配置
+
+企业微信通知支持敏感词审核功能，可以自动处理消息中的敏感内容。
+
+**审核策略说明**
+
+| 策略 | 说明 |
+|------|------|
+| `block` | 检测到敏感词时拒绝发送，发送告警消息 |
+| `replace` | 将敏感词替换为 `[敏感词]` |
+| `pinyin_reverse` | 将敏感词转换为拼音混淆形式（默认） |
+
+**配置示例**
+
+```bash
+# 启用敏感词审核
+WECOM_MODERATION_ENABLED=true
+# 敏感词库 URL（支持多个，逗号分隔）
+WECOM_MODERATION_URLS=https://example.com/words1.txt,https://example.com/words2.txt
+# 审核策略：pinyin_reverse（拼音混淆）
+WECOM_MODERATION_STRATEGY=pinyin_reverse
+```
+
+**敏感词文件格式**
+
+每行一个敏感词，支持注释（以 `#` 开头）：
+
+```text
+# 这是注释
+敏感词1
+敏感词2
 ```
 
 ## PO Token 配置

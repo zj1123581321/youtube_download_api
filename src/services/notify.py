@@ -58,12 +58,51 @@ class NotificationService:
         self.enabled = bool(settings.wecom_webhook_url) and WECOM_AVAILABLE
 
         if WECOM_AVAILABLE and self.enabled:
-            self.notifier = WeComNotifier()
+            self.notifier = self._create_notifier()
         else:
             self.notifier = None
 
         if not self.enabled:
             logger.info("WeCom notifications disabled")
+
+    def _create_notifier(self) -> "WeComNotifier":
+        """
+        Create WeComNotifier with optional content moderation.
+
+        Returns:
+            Configured WeComNotifier instance.
+        """
+        if not self.settings.wecom_moderation_enabled:
+            logger.info("WeCom content moderation disabled")
+            return WeComNotifier()
+
+        # Get moderation URL list
+        moderation_urls = self.settings.get_moderation_url_list()
+        if not moderation_urls:
+            logger.warning(
+                "Content moderation enabled but no URLs configured, "
+                "falling back to no moderation"
+            )
+            return WeComNotifier()
+
+        # Build moderation config
+        moderation_config = {
+            "sensitive_word_urls": moderation_urls,
+            "strategy": self.settings.wecom_moderation_strategy,
+            "log_sensitive_messages": True,
+            "cache_dir": str(self.settings.data_dir / ".wecom_cache"),
+        }
+
+        logger.info(
+            f"WeCom content moderation enabled: "
+            f"strategy={self.settings.wecom_moderation_strategy}, "
+            f"urls={len(moderation_urls)}"
+        )
+
+        return WeComNotifier(
+            enable_content_moderation=True,
+            moderation_config=moderation_config,
+        )
 
     def _format_local_time(self, dt: Optional[datetime]) -> str:
         """

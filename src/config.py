@@ -80,6 +80,19 @@ class Settings(BaseSettings):
         default=None, description="TikHub API key for subtitle fetching"
     )
 
+    # ============ WeCom Content Moderation ============
+    wecom_moderation_enabled: bool = Field(
+        default=False, description="Enable content moderation for WeCom notifications"
+    )
+    wecom_moderation_urls: Optional[str] = Field(
+        default=None,
+        description="Comma-separated list of sensitive word URLs",
+    )
+    wecom_moderation_strategy: str = Field(
+        default="pinyin_reverse",
+        description="Moderation strategy: block, replace, or pinyin_reverse",
+    )
+
     # ============ Optional Configuration ============
     cookie_file: Optional[str] = Field(
         default=None, description="Path to cookie file for age-restricted videos"
@@ -87,6 +100,23 @@ class Settings(BaseSettings):
     dry_run: bool = Field(
         default=False, description="Dry run mode (skip actual downloads)"
     )
+
+    @field_validator("wecom_moderation_strategy")
+    @classmethod
+    def validate_moderation_strategy(cls, v: str) -> str:
+        """Validate moderation strategy is one of the allowed values."""
+        allowed = {"block", "replace", "pinyin_reverse"}
+        if v.lower() not in allowed:
+            raise ValueError(
+                f"wecom_moderation_strategy must be one of {allowed}, got '{v}'"
+            )
+        return v.lower()
+
+    def get_moderation_url_list(self) -> list[str]:
+        """Parse moderation URLs from comma-separated string."""
+        if not self.wecom_moderation_urls:
+            return []
+        return [url.strip() for url in self.wecom_moderation_urls.split(",") if url.strip()]
 
     @field_validator("data_dir", mode="before")
     @classmethod
