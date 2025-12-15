@@ -84,6 +84,37 @@ def format_duration(seconds: Optional[int]) -> str:
     return f"{minutes}:{secs:02d}"
 
 
+def format_timedelta(td: Optional[timedelta]) -> str:
+    """
+    Format timedelta to human-readable string.
+
+    Args:
+        td: Timedelta object.
+
+    Returns:
+        Formatted string like "1小时23分钟" or "45秒".
+    """
+    if td is None:
+        return "N/A"
+
+    total_seconds = int(td.total_seconds())
+    if total_seconds < 0:
+        return "0秒"
+
+    hours, remainder = divmod(total_seconds, 3600)
+    minutes, seconds = divmod(remainder, 60)
+
+    parts = []
+    if hours > 0:
+        parts.append(f"{hours}小时")
+    if minutes > 0:
+        parts.append(f"{minutes}分钟")
+    if seconds > 0 or not parts:
+        parts.append(f"{seconds}秒")
+
+    return "".join(parts)
+
+
 def format_file_size(size_bytes: Optional[int]) -> str:
     """
     Format file size to human-readable string.

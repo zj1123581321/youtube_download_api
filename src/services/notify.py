@@ -20,7 +20,7 @@ EXPECTED_VIDEO_ERRORS = {
     ErrorCode.VIDEO_AGE_RESTRICTED,  # 年龄限制
     ErrorCode.VIDEO_LIVE_STREAM,  # 直播流（未开始的直播等）
 }
-from src.utils.helpers import format_duration
+from src.utils.helpers import format_duration, format_timedelta
 from src.utils.logger import logger
 
 if TYPE_CHECKING:
@@ -163,6 +163,23 @@ class NotificationService:
                     transcript_ext = transcript_file.format or "srt"
                     transcript_url = f"{base_url}/api/v1/files/{task.transcript_file_id}.{transcript_ext}"
 
+            # 格式化时间信息
+            created_time = (
+                task.created_at.strftime("%Y-%m-%d %H:%M:%S")
+                if task.created_at
+                else "N/A"
+            )
+            started_time = (
+                task.started_at.strftime("%Y-%m-%d %H:%M:%S")
+                if task.started_at
+                else "N/A"
+            )
+            wait_time = (
+                format_timedelta(task.started_at - task.created_at)
+                if task.created_at and task.started_at
+                else "N/A"
+            )
+
             content = f"""# ✅ Download Completed
 
 🎬 **Video**: {title}
@@ -176,6 +193,10 @@ class NotificationService:
 
 🎵 **Audio**: {audio_url}
 📄 **Transcript**: {transcript_url if task.transcript_file_id else "无字幕"}
+
+📅 **Created**: {created_time}
+▶️ **Started**: {started_time}
+⏳ **Wait Time**: {wait_time}
 
 🆔 **Task ID**: `{task.id}`
 """
@@ -219,6 +240,23 @@ class NotificationService:
                 title_emoji = "⚠️"
                 title_text = "Download Skipped"
 
+            # 格式化时间信息
+            created_time = (
+                task.created_at.strftime("%Y-%m-%d %H:%M:%S")
+                if task.created_at
+                else "N/A"
+            )
+            started_time = (
+                task.started_at.strftime("%Y-%m-%d %H:%M:%S")
+                if task.started_at
+                else "N/A"
+            )
+            wait_time = (
+                format_timedelta(task.started_at - task.created_at)
+                if task.created_at and task.started_at
+                else "N/A"
+            )
+
             content = f"""# {title_emoji} {title_text}
 
 🎬 **Video**: {title}
@@ -226,6 +264,10 @@ class NotificationService:
 
 💥 **Error Code**: `{error_code}`
 📋 **Error Message**: {error}
+
+📅 **Created**: {created_time}
+▶️ **Started**: {started_time}
+⏳ **Wait Time**: {wait_time}
 
 🔄 **Retry Count**: {task.retry_count}
 🆔 **Task ID**: `{task.id}`
